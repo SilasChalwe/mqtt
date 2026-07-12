@@ -5,17 +5,17 @@
 //  WiFi Settings
 //  Replace with your own network credentials.
 // =====================================================================
-const char* WIFI_SSID     = "covianhive";   // WiFi network name
-const char* WIFI_PASSWORD = "********";     // WiFi password
+const char* const WIFI_SSID     = "covianhive";   // WiFi network name
+const char* const WIFI_PASSWORD = "********";     // WiFi password
 
 // =====================================================================
 //  MQTT Broker Settings
 //  The MQTT broker address, port, and the client ID that identifies
 //  this ESP32 on the network.
 // =====================================================================
-const char* MQTT_HOST      = "mqtt.covianhive.tech";   // Broker hostname
+const char* const MQTT_HOST      = "mqtt.covianhive.tech";   // Broker hostname
 const int   MQTT_PORT      = 443;                       // WebSocket Secure (WSS) port
-const char* MQTT_CLIENT_ID = "esp32-client";            // Unique client identifier
+const char* const MQTT_CLIENT_ID = "esp32-client";            // Unique client identifier
 
 // =====================================================================
 //  MQTT Topics
@@ -24,12 +24,12 @@ const char* MQTT_CLIENT_ID = "esp32-client";            // Unique client identif
 //    - TOPIC_SENSOR_PUB : the ESP32 publishes sensor data (temperature) here
 //    - TOPIC_PING       : the ESP32 sends a "ping" heartbeat to this topic
 // =====================================================================
-const char* TOPIC_TEST_SUB      = "esp32/command/test";            // test messages
-const char* TOPIC_SENSOR_PUB    = "esp32/telemetry/temperature";   // temperature data
-const char* TOPIC_BATTERY_PUB   = "esp32/telemetry/battery";       // battery telemetry
-const char* TOPIC_SOLAR_PUB     = "esp32/telemetry/solar";         // solar telemetry
-const char* TOPIC_ESTIMATOR_PUB = "esp32/telemetry/estimator";     // power estimator telemetry
-const char* TOPIC_PING          = "esp32/telemetry/ping";          // heartbeat
+const char* const TOPIC_TEST_SUB      = "esp32/command/test";            // test messages
+const char* const TOPIC_SENSOR_PUB    = "esp32/telemetry/temperature";   // temperature data
+const char* const TOPIC_BATTERY_PUB   = "esp32/telemetry/battery";       // battery telemetry
+const char* const TOPIC_SOLAR_PUB     = "esp32/telemetry/solar";         // solar telemetry
+const char* const TOPIC_ESTIMATOR_PUB = "esp32/telemetry/estimator";     // power estimator telemetry
+const char* const TOPIC_PING          = "esp32/telemetry/ping";          // heartbeat
 
 
 // =====================================================================
@@ -56,7 +56,7 @@ const float ESTIMATOR_FORCED_LOADS = 1.0;  // Forced load current in amps for es
 //  Zambia uses Central Africa Time (CAT), UTC+2, and does not observe
 //  Daylight Saving Time (DST).
 // =====================================================================
-const char* NTP_SERVER = "pool.ntp.org";     // NTP server to synchronise time
+const char* const NTP_SERVER = "pool.ntp.org";     // NTP server to synchronise time
 const long  GMT_OFFSET_SEC = 2 * 3600;       // 7200 seconds = UTC+2
 const int   DAYLIGHT_OFFSET_SEC = 0;         // No daylight saving in Zambia
 
