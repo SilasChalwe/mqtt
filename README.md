@@ -314,25 +314,18 @@ The device publishes these topics automatically; dashboards should subscribe to 
 
 ## Validation and simulation
 
-This repository also includes validation and verification tooling for both firmware logic and system simulations.
+This checkout includes focused native C++ regression tests for the load-selection optimiser:
 
-- `test/` contains Arduino test sketches and validation examples for functions such as `CommandHandler`, `MQTTManager`, `PowerEstimator`, and `BestFirstSearch`.
-- `validate/` contains simulation scripts and dashboard assets for comparing managed and unmanaged battery discharge behavior.
-- `validate/combined.py` runs simulated battery/solar scenarios and can generate CSV and plot output.
-- `validate/README.md` documents command-line usage and example workflows.
+- `test/test_best_first_search.cpp` verifies that `BestFirstSearch::execute()` respects cumulative current and power limits, subtracts forced active loads before selecting optional loads, and keeps the optimal optional set under both constraints.
+- `test/Arduino.h` is a small compatibility shim used only by the native tests so the optimiser can be compiled outside the Arduino IDE.
 
-### Example validation output
+Historical simulation tooling and chart assets such as `validate/combined.py`, `validate/README.md`, and `validate/png/bfs_run_comparison.png` are not part of this checkout. Treat those validation dashboards as planned or external artifacts unless they are added in a future revision.
 
-![Validation comparison chart](validate/png/bfs_run_comparison.png)
+To run the native optimiser regression tests from the repository root:
 
-The bottom panel of the chart shows solar behaviour for both managed and unmanaged cases:
-
-- **Blue**: managed solar current
-- **Orange dashed**: managed solar power
-- **Green**: unmanaged solar current
-- **Red dashed**: unmanaged solar power
-
-The upper panels show battery voltage and state of charge for the same managed/unmanaged scenarios.
+```sh
+g++ -std=c++17 -Itest -Iinclude -Ilib/src test/test_best_first_search.cpp src/Node.cpp -o /tmp/test_best_first_search && /tmp/test_best_first_search
+```
 
 ## Build and upload
 
@@ -347,8 +340,8 @@ The upper panels show battery voltage and state of charge for the same managed/u
 - `include/` — project headers
 - `src/` — project implementation files
 - `lib/` — third-party library sources and helpers
-- `test/` — test sketches and validation examples
-- `validate/` — validation scripts and dashboard assets
+- `test/` — native regression tests and Arduino compatibility shim
+- `validate/` — planned or external validation dashboard artifacts; not present in this checkout
 
 ## Notes
 

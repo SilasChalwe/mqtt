@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include "../include/MQTTManager.h"
-#include "../include/CommandHandler.h"      // <-- ADD THIS LINE
+#include "../include/CommandHandler.h" // command queue dispatch
 #include "../include/MQTTTopics.h"
 #include "esp_crt_bundle.h"
 #include <stdio.h>
