@@ -1,0 +1,56 @@
+# Arduino and ESP32 build artifacts
+build/
+*.bin
+*.elf
+*.hex
+*.map
+*.lst
+*.sym
+*.eep
+*.a
+*.o
+*.d
+*.bin
+*.log
+*.json
+
+# Build system
+sdkconfig
+sdkconfig.old
+.build
+
+# Arduino IDE
+*.cache
+*.deps
+*.pio
+.arduinoIDE*
+
+# VS Code
+.vscode/
+
+# PlatformIO
+.pio/
+.platformio/
+
+# Backup and temporary files
+*~
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.orig
+
+# MacOS
+.DS_Store
+
+# Logs
+*.log
+
+# Python virtual envs
+venv/
+.env/
+
+# Ignore generated files from Arduino compilation if present
+sketch/*.cpp
+sketch/*.ino.cpp
