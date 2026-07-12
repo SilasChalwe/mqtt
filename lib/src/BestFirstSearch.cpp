@@ -2,6 +2,7 @@
 
 #include <Arduino.h>      // required for millis
 #include <algorithm>      // required for std::max
+#include <cmath>          // required for ceil/floor in resource scaling
 
 BestFirstSearch::BestFirstSearch() {
     // Root is the entry point (the very top circle in your image)
@@ -133,9 +134,8 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
 
     float safeCurrent = (C_available > 0.0f) ? C_available : 0.0f;
     float safePower = (P_available > 0.0f) ? P_available : 0.0f;
-    const int POWER_SCALE = 10; // 1 DP power unit = 10 W
-    int W = (int)(safePower / POWER_SCALE);
-    if (W < 0) W = 0;
+    const int CURRENT_SCALE = 10;   // 1 DP current unit = 0.1 A
+    const int POWER_SCALE = 10;     // 1 DP power unit = 10 W
 
     float forcedCurrent = 0.0f;
     float forcedPower = 0.0f;
@@ -152,7 +152,9 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
     if (remainingCurrent < 0.0f) remainingCurrent = 0.0f;
     if (remainingPower < 0.0f) remainingPower = 0.0f;
 
-    int remainingW = (int)(remainingPower / POWER_SCALE);
+    int remainingC = (int)std::floor(remainingCurrent * CURRENT_SCALE + 0.0001f);
+    int remainingW = (int)std::floor(remainingPower / POWER_SCALE + 0.0001f);
+    if (remainingC < 0) remainingC = 0;
     if (remainingW < 0) remainingW = 0;
 
     std::vector<bool> selected(N, false);
@@ -166,55 +168,47 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
     }
     int M = nonForcedIndices.size();
 
-    std::vector<std::vector<int>> K(M + 1, std::vector<int>(remainingW + 1, 0));
+    auto index = [&](int i, int c, int w) {
+        return ((i * (remainingC + 1)) + c) * (remainingW + 1) + w;
+    };
+
+    std::vector<int> K((M + 1) * (remainingC + 1) * (remainingW + 1), 0);
     for (int i = 1; i <= M; i++) {
         Node* node = candidates[nonForcedIndices[i - 1]];
-        int P_i = (int)(node->power / POWER_SCALE);
+        int C_i = (int)std::ceil(node->currentDraw * CURRENT_SCALE - 0.0001f);
+        int P_i = (int)std::ceil(node->power / POWER_SCALE - 0.0001f);
+        if (C_i < 0) C_i = 0;
         if (P_i < 0) P_i = 0;
         int U_i = node->priority;
-        for (int w = 0; w <= remainingW; w++) {
-            if (P_i <= w && node->currentDraw <= remainingCurrent && node->power <= remainingPower) {
-                K[i][w] = max(U_i + K[i - 1][w - P_i], K[i - 1][w]);
-            } else {
-                K[i][w] = K[i - 1][w];
+
+        for (int c = 0; c <= remainingC; c++) {
+            for (int w = 0; w <= remainingW; w++) {
+                int skip = K[index(i - 1, c, w)];
+                int take = skip;
+                if (C_i <= c && P_i <= w && node->currentDraw <= remainingCurrent && node->power <= remainingPower) {
+                    take = U_i + K[index(i - 1, c - C_i, w - P_i)];
+                }
+                K[index(i, c, w)] = max(take, skip);
             }
         }
     }
 
-    int res = K[M][remainingW];
+    int c_limit = remainingC;
     int w_limit = remainingW;
-    for (int i = M; i > 0 && res > 0; i--) {
+    for (int i = M; i > 0; i--) {
         Node* node = candidates[nonForcedIndices[i - 1]];
-        int P_i = (int)(node->power / POWER_SCALE);
+        int C_i = (int)std::ceil(node->currentDraw * CURRENT_SCALE - 0.0001f);
+        int P_i = (int)std::ceil(node->power / POWER_SCALE - 0.0001f);
+        if (C_i < 0) C_i = 0;
         if (P_i < 0) P_i = 0;
-        if (res == K[i - 1][w_limit]) {
-            selected[nonForcedIndices[i - 1]] = false;
-        } else {
+
+        if (C_i <= c_limit && P_i <= w_limit &&
+            K[index(i, c_limit, w_limit)] == node->priority + K[index(i - 1, c_limit - C_i, w_limit - P_i)]) {
             selected[nonForcedIndices[i - 1]] = true;
-            res -= node->priority;
+            c_limit -= C_i;
             w_limit -= P_i;
-        }
-    }
-
-    float totalCurrent = forcedCurrent;
-    for (int i = 0; i < N; i++) {
-        if (selected[i] && !candidates[i]->isForced) totalCurrent += candidates[i]->currentDraw;
-    }
-
-    if (totalCurrent > safeCurrent) {
-        std::vector<int> order;
-        for (int i = 0; i < N; i++) {
-            if (selected[i] && !candidates[i]->isForced) order.push_back(i);
-        }
-        std::sort(order.begin(), order.end(), [&](int a, int b) {
-            float ratioA = candidates[a]->priority / max(0.1f, candidates[a]->currentDraw);
-            float ratioB = candidates[b]->priority / max(0.1f, candidates[b]->currentDraw);
-            return ratioA < ratioB;
-        });
-        for (int idx : order) {
-            if (totalCurrent <= safeCurrent) break;
-            selected[idx] = false;
-            totalCurrent -= candidates[idx]->currentDraw;
+        } else {
+            selected[nonForcedIndices[i - 1]] = false;
         }
     }
 
