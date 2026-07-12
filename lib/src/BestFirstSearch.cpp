@@ -212,6 +212,10 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
         }
     }
 
+    for (int stateIndex = bestState; stateIndex >= 0 && states[stateIndex].candidateIndex >= 0; stateIndex = states[stateIndex].previous) {
+        selected[states[stateIndex].candidateIndex] = true;
+    }
+
     // Energy accounting must use the state that was active during the
     // elapsed interval.  Accumulate before applying the newly selected state
     // so transitions from ON->OFF do not drop the just-finished runtime and
