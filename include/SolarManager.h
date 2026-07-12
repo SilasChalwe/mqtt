@@ -4,30 +4,25 @@
 #include <Arduino.h>
 #include <Adafruit_INA219.h>
 
-// Shared global instance from Battery.h 
-extern Adafruit_INA219 ina219;
-
 class SolarManager {
 private:
-    // Core parameters
+    Adafruit_INA219& _sensor;
     int _adcPin;
     int _precision;
+    float _voltageDividerRatio;
 
-    // Signal filtering state variables
     float _filteredVoltage;
     float _filteredCurrentAmps;
-
-    // Energy tracking
     float _totalEnergyWh;
     unsigned long _lastUpdateTimeMs;
 
-    static constexpr float FILTER_ALPHA = 0.15;
+    static constexpr float FILTER_ALPHA = 0.15f;
 
 public:
-    SolarManager(int adcPin, int precision = 3);
+    SolarManager(Adafruit_INA219& sensor, int adcPin, float voltageDividerRatio, int precision = 3);
 
-    bool begin(); 
-    void update(); // Uses the shared global 'ina219'
+    bool begin();
+    void update();
     void resetEnergy();
 
     float getVoltage() const { return _filteredVoltage; }
@@ -35,7 +30,6 @@ public:
     float getPower() const { return (_filteredCurrentAmps <= 0.0f) ? 0.0f : (_filteredVoltage * _filteredCurrentAmps); }
     float getEnergyWh() const { return _totalEnergyWh; }
 
-    // Test helpers
     void setCurrent(float amps) { _filteredCurrentAmps = amps; }
     void setVoltage(float volts) { _filteredVoltage = volts; }
 };

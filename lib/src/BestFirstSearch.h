@@ -6,24 +6,7 @@
 #include <queue>
 #include <algorithm>
 #include <functional>
-
-// Represents a node in the Distribution Tree (Branch or Leaf)
-struct Node {
-    int id;
-    String name;          // Using String to prevent memory corruption/static errors
-    float currentDraw;    // Amps
-    float voltage;        // Volts for this appliance (default system voltage)
-    float power;          // Watts, computed as voltage * current
-    float energyWh;       // Watt-hours consumed while active
-    unsigned long lastActiveUpdateMs; // Last time energy was accumulated
-    int priority;         // Utility score
-    int relayPin;         // -1 = Branch (White Node), >= 0 = Appliance (Orange Node)
-    bool isForced;        // Critical load
-    float wireFriction;   // Heuristic cost g(n)
-    bool isActive;        // Current relay state
-    
-    std::vector<Node*> children; 
-};
+#include "../../include/Node.h"
 
 class BestFirstSearch {
 private:
@@ -51,7 +34,7 @@ public:
     // [ALGORITHM] Stage 2: BFS Path Optimization (Scout)
     std::vector<Node*> scout(float availableCurrent);
 
-    // [ACTUATE] Relay Actuation logic (The Knapsack Engine)
+    // [OPTIMISE] Select active states and update energy accounting. Hardware actuation is handled by RelayControl.
     void execute(std::vector<Node*> candidates, float C_available, float P_available);
 };
 

@@ -4,8 +4,8 @@ This test sketch validates the solar/battery power estimator logic in the projec
 
 ## Covered behavior
 - `SolarManager` current, voltage, and power calculations.
-- `PowerEstimator::get_CAvailable()` budget calculation under battery SoC and solar input.
-- `PowerEstimator::get_EstimatedRuntime()` for both net solar-supported and net discharge scenarios.
+- `PowerEstimator::getAvailableCurrent()` budget calculation under battery SoC and solar input.
+- `PowerEstimator::getEstimatedRuntimeHours()` for both net solar-supported and net discharge scenarios.
 - Safety threshold behavior that prevents negative available current.
 
 ## How to run
@@ -19,4 +19,4 @@ The sketch prints a pass/fail result for each test and a final `=== Test Complet
 
 ## Notes
 - This is a unit test for estimator logic only; it does not exercise the full Best-First Search or knapsack load scheduling pipeline.
-- Sensor hardware is mocked in the sketch using a local `Adafruit_INA219 ina219` instance and manually assigned battery SoC/voltage values.
+- Sensor hardware is mocked in the sketch using a local `Adafruit_INA219 ina219` instance, while battery and solar values are passed into `PowerEstimator::update(...)`.

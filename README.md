@@ -128,14 +128,30 @@ It publishes responses on `esp32/status/...` topics and telemetry on `esp32/tele
   - `BFS busy`
 
 #### `esp32/command/control/relay/<node_name>`
-- purpose: turn an individual relay node on or off.
-- publish payload: `on`, `off`, or `{"state":"on"}` / `{"state":"off"}`
+- purpose: manually force an individual relay node on or off, or return it to automatic optimisation.
+- publish payload: `on`, `off`, `auto`, or `{"state":"on"}` / `{"state":"off"}` / `{"state":"auto"}`
 - subscribe to: `esp32/status/control/relay_changed`
-- example response payload: `MyFridge`
+- example response payload:
+
+```json
+{
+  "ok": true,
+  "type": "control.relay_changed",
+  "request_topic": "esp32/command/control/relay/MyFridge",
+  "data": {
+    "requested_state": "on",
+    "name": "MyFridge",
+    "pin": 13,
+    "forced": true,
+    "forced_state": "forced_on",
+    "active": true
+  }
+}
+```
 - error responses on `esp32/status/error` include:
   - `Invalid relay node name`
   - `Invalid relay node`
-  - `Invalid relay state (use 'on'/'off')`
+  - `Invalid relay state (use 'on'/'off'/'auto')`
   - `Load tree unavailable`
   - `Internal error: mutex unavailable`
   - `BFS busy`
@@ -284,193 +300,17 @@ The device publishes these topics automatically; dashboards should subscribe to 
 ### Error topic
 
 - `esp32/status/error`
-- payload: string describing the failure (example: `Missing 'name'`, `BFS busy`, `Internal error: mutex unavailable`).
-
-## Validation and simulation
-
-### `esp32/command/test`
-- purpose: simple topic placeholder for test commands; currently no response is emitted.
-- response: none
-
-### `esp32/command/config/add`
-- purpose: add a single load node to the power-management tree.
-- response topic: `esp32/status/config/node_added`
-- example response payload: `MyFridge`
-- if failed: `failed`
-- possible error payloads on `esp32/status/error`:
-  - `Invalid JSON for add`
-  - `Missing 'name'`
-  - `Load tree unavailable`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/config/add_bulk`
-- purpose: add multiple load nodes in a single JSON array.
-- response topic: `esp32/status/config/bulk_added`
-- example payload: `Added 3 loads, skipped 1 invalid entries`
-- possible error payloads on `esp32/status/error`:
-  - `Out of memory for bulk add`
-  - `Invalid JSON array for bulk add`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/config/update`
-- purpose: update one existing load node’s settings.
-- response topic: `esp32/status/config/update_done`
-- example response payload: `MyFridge`
-- if failed: `failed`
-- possible error payloads on `esp32/status/error`:
-  - `Invalid JSON for update`
-  - `Missing 'name'`
-  - `Load tree unavailable`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/config/delete`
-- purpose: remove a load node from the tree.
-- response topic: `esp32/status/config/delete_done`
-- example response payload: `MyFridge`
-- if failed: `failed`
-- possible error payloads on `esp32/status/error`:
-  - `Invalid JSON for delete`
-  - `Missing 'name'`
-  - `Cannot delete root node`
-  - `Load tree unavailable`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/config/list`
-- purpose: return a flat list of configured nodes.
-- response topic: `esp32/status/config/list`
-- example payload: `[]`
-- example payload: `[{"name":"MyFridge","amps":1.5,"voltage":230.0}]`
-- possible error payloads on `esp32/status/error`:
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/config/get_node`
-- purpose: retrieve a single node’s details.
-- response topic: `esp32/status/config/get_node`
-- example successful payload:
+- payload: JSON error envelope, for example:
 
 ```json
 {
-  "name": "MyFridge",
-  "amps": 1.5,
-  "voltage": 230.0,
-  "power_w": 345.0,
-  "energy_wh": 0.0,
-  "priority": 1,
-  "pin": 13,
-  "friction": 0.1,
-  "forced": false,
-  "forced_state": "not_forced",
-  "active": true
+  "ok": false,
+  "type": "error",
+  "request_topic": "esp32/command/config/add",
+  "code": "missing_name",
+  "message": "Missing 'name'"
 }
 ```
-
-- example not-found payload: `{"error":"not found"}`
-- possible error payloads on `esp32/status/error`:
-  - `Invalid JSON for get_node`
-  - `Missing 'name'`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/config/save_tree`
-- purpose: save the current load tree to LittleFS as a text file.
-- response topic: `esp32/status/config/tree_saved`
-- response payload: `OK`
-- possible error payloads on `esp32/status/error`:
-  - `Load tree unavailable`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-  - `LittleFS mount failed`
-  - `Cannot write tree file`
-
-### `esp32/command/config/tree`
-- purpose: return the full nested load tree structure as JSON.
-- response topic: `esp32/status/config/tree`
-- example payload:
-
-```json
-{
-  "name": "Main_DB",
-  "children": [
-    {
-      "name": "MyFridge",
-      "amps": 1.5,
-      "priority": 1,
-      "pin": 13,
-      "friction": 0.1,
-      "forced": false,
-      "forced_state": "not_forced",
-      "active": true,
-      "children": []
-    }
-  ]
-}
-```
-
-- possible error payloads on `esp32/status/error`:
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/control/execute`
-- purpose: run the optimisation algorithm immediately with the provided available current.
-- response topics:
-  - `esp32/status/control/execute_received`
-  - `esp32/status/control/result`
-- example first response payload: `Running optimisation...`
-- example result payload:
-
-```json
-{
-  "timestamp": "2026-07-12 12:00:00",
-  "available_current": 10.0,
-  "loads": [
-    {
-      "name": "MyFridge",
-      "parent": "Main_DB",
-      "amps": 1.5,
-      "voltage": 230.0,
-      "power_w": 345.0,
-      "energy_wh": 0.0,
-      "priority": 1,
-      "pin": 13,
-      "friction": 0.1,
-      "forced": false,
-      "forced_state": "not_forced",
-      "active": true
-    }
-  ]
-}
-```
-
-- if the tree is empty, response payload: `Auto-optimisation skipped (tree empty)` on `esp32/status/control/result`
-- possible error payloads on `esp32/status/error`:
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-### `esp32/command/control/relay/<node_name>`
-- purpose: directly toggle a relay node on or off.
-- response topic: `esp32/status/control/relay_changed`
-- example response payload: `MyFridge`
-- possible error payloads on `esp32/status/error`:
-  - `Invalid relay node name`
-  - `Invalid relay node`
-  - `Invalid relay state (use 'on'/'off')`
-  - `Load tree unavailable`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-Common error topic:
-
-- `esp32/status/error`
-- example payloads:
-  - `Invalid JSON for add`
-  - `Missing 'name'`
-  - `BFS busy`
-  - `Internal error: mutex unavailable`
 
 ## Validation and simulation
 

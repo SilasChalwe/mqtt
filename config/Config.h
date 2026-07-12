@@ -31,10 +31,23 @@ const char* TOPIC_SOLAR_PUB     = "esp32/telemetry/solar";         // solar tele
 const char* TOPIC_ESTIMATOR_PUB = "esp32/telemetry/estimator";     // power estimator telemetry
 const char* TOPIC_PING          = "esp32/telemetry/ping";          // heartbeat
 
+
+// =====================================================================
+//  Relay Settings
+//  Set RELAY_ACTIVE_HIGH to false for active-low relay modules.
+// =====================================================================
+const bool RELAY_ACTIVE_HIGH = true;
+
 // =====================================================================
 //  Energy settings
 // =====================================================================
 const float BATTERY_CAPACITY_AH = 100.0;  // Total battery capacity in amp-hours
+
+const float BATTERY_VOLTAGE_MAX = 4.20f;
+const float BATTERY_VOLTAGE_MIN = 3.40f;
+const float INVERTER_MAX_AMPS = 15.0f;
+const int   SOLAR_VOLTAGE_ADC_PIN = 35;
+const float SOLAR_VOLTAGE_DIVIDER_RATIO = 11.0f;
 const float ESTIMATOR_RUNTIME_HOURS = 1.0; // Default runtime horizon for estimator calculations
 const float ESTIMATOR_FORCED_LOADS = 1.0;  // Forced load current in amps for estimator budget
 

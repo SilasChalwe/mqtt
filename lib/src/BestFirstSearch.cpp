@@ -1,6 +1,6 @@
 #include "BestFirstSearch.h"
 
-#include <Arduino.h>      // required for pinMode, digitalWrite
+#include <Arduino.h>      // required for millis
 #include <algorithm>      // required for std::max
 
 BestFirstSearch::BestFirstSearch() {
@@ -12,6 +12,7 @@ BestFirstSearch::BestFirstSearch() {
     root->voltage = 0.0f;
     root->power = 0.0f;
     root->energyWh = 0.0f;
+    root->lastActiveUpdateMs = millis();
     root->priority = 0;
     root->relayPin = -1;
     root->isForced = true;
@@ -40,7 +41,7 @@ Node* BestFirstSearch::createAndAddNode(const String& parentName, const String& 
     newNode->name = name;
     newNode->currentDraw = amps;
     newNode->voltage = voltage;
-    newNode->power = amps * voltage;
+    newNode->recalculatePower();
     newNode->energyWh = 0.0f;
     newNode->lastActiveUpdateMs = millis();
     newNode->priority = priority;
@@ -49,12 +50,6 @@ Node* BestFirstSearch::createAndAddNode(const String& parentName, const String& 
     newNode->isForced = forced;
     newNode->isActive = false;
 
-    // Physical setup if it's an appliance
-    if (pin != -1) {
-        pinMode(pin, OUTPUT);
-        digitalWrite(pin, LOW);
-    }
-    
     parent->children.push_back(newNode);
     return newNode;
 }
@@ -66,7 +61,7 @@ bool BestFirstSearch::updateNode(const String& name, float newAmps, int newPrior
         if (newVoltage > 0.0f) {
             target->voltage = newVoltage;
         }
-        target->power = target->currentDraw * target->voltage;
+        target->recalculatePower();
         target->priority = newPriority;
         target->isForced = forced;
         return true;
@@ -145,8 +140,8 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
     float forcedCurrent = 0.0f;
     float forcedPower = 0.0f;
     for (Node* n : candidates) {
-        n->power = n->currentDraw * n->voltage;
-        if (n->isForced) {
+        n->recalculatePower();
+        if (n->isForced && n->isActive) {
             forcedCurrent += n->currentDraw;
             forcedPower += n->power;
         }
@@ -162,7 +157,7 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
 
     std::vector<bool> selected(N, false);
     for (int i = 0; i < N; i++) {
-        if (candidates[i]->isForced) selected[i] = true;
+        if (candidates[i]->isForced) selected[i] = candidates[i]->isActive;
     }
 
     std::vector<int> nonForcedIndices;
@@ -229,14 +224,6 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
         Node* n = candidates[i];
         if (n->relayPin == -1) continue;
         n->isActive = selected[i];
-        digitalWrite(n->relayPin, n->isActive ? HIGH : LOW);
-        if (n->isActive) {
-            unsigned long deltaMs = (nowMs >= n->lastActiveUpdateMs)
-                                    ? (nowMs - n->lastActiveUpdateMs)
-                                    : 0;
-            float hoursPassed = deltaMs / 3600000.0f;
-            n->energyWh += n->power * hoursPassed;
-        }
-        n->lastActiveUpdateMs = nowMs;
+        n->accumulateEnergy(nowMs);
     }
 }

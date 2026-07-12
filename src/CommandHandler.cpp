@@ -1,10 +1,12 @@
 #include "../include/CommandHandler.h"
-#include "../include/Battery.h"
+#include "../include/RelayControl.h"
 #include "../lib/src/BestFirstSearch.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <ArduinoJson.h>
 #include "../include/TimeManager.h"
+#include "../include/MQTTResponse.h"
+#include "../include/MQTTTopics.h"
 #include <LittleFS.h>
 #include <functional>
 #include <freertos/queue.h>
@@ -14,6 +16,38 @@
 QueueHandle_t commandQueue = NULL;
 static BestFirstSearch* g_bfs = nullptr;
 static MQTTManager* g_mqtt = nullptr;
+
+
+static const char* errorCodeForMessage(const char* message) {
+    if (!message) return "error";
+    String msg(message);
+    msg.toLowerCase();
+    String code;
+    for (size_t i = 0; i < msg.length(); ++i) {
+        char c = msg[i];
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            code += c;
+        } else if (code.length() > 0 && code[code.length() - 1] != '_') {
+            code += '_';
+        }
+    }
+    while (code.endsWith("_")) {
+        code.remove(code.length() - 1);
+    }
+    static char buffer[64];
+    code.substring(0, sizeof(buffer) - 1).toCharArray(buffer, sizeof(buffer));
+    return buffer;
+}
+
+static void publishError(MQTTManager* mqtt, const String& requestTopic, const char* code, const char* message) {
+    if (!mqtt) return;
+    String body = MQTTResponse::error(requestTopic.c_str(), code, message);
+    mqtt->publish(MQTTTopics::StatusError, body.c_str());
+}
+
+static void publishError(MQTTManager* mqtt, const String& requestTopic, const char* message) {
+    publishError(mqtt, requestTopic, errorCodeForMessage(message), message);
+}
 
 // Task that dequeues commands and calls processCommand() in a single consumer
 static void commandProcessorTask(void* pvParameters) {
@@ -56,7 +90,7 @@ bool enqueueCommand(const String& topic, const String& payload) {
 static bool validateCommandContext(BestFirstSearch* bfs, MQTTManager* mqtt, const String& topic) {
     if (!mqtt) return false;
     if (!bfs) {
-        mqtt->publish("esp32/status/error", "Internal error: BFS unavailable");
+        publishError(mqtt, topic, "Internal error: BFS unavailable");
         Serial.printf("Command failed: %s - BFS unavailable\n", topic.c_str());
         return false;
     }
@@ -73,9 +107,9 @@ static bool parentExists(BestFirstSearch* bfs, const String& parentName) {
     return bfs->getNode(parentName) != nullptr;
 }
 
-static void publishParentMissingError(MQTTManager* mqtt, const String& parentName) {
+static void publishParentMissingError(MQTTManager* mqtt, const String& topic, const String& parentName) {
     String msg = "Parent branch '" + parentName + "' does not exist. Create the parent under Main_DB before adding this child.";
-    mqtt->publish("esp32/status/error", msg.c_str());
+    publishError(mqtt, topic, msg.c_str());
     Serial.println(msg);
 }
 
@@ -119,13 +153,6 @@ static bool parseJsonDocument(const String& payload, DynamicJsonDocument& doc, c
     return true;
 }
 
-// Return a short string describing forced state: "forced_on", "forced_off", or "not_forced"
-static const char* forcedStateLabel(Node* node) {
-    if (!node) return "not_forced";
-    if (!node->isForced) return "not_forced";
-    return node->isActive ? "forced_on" : "forced_off";
-}
-
 // Helper to format tree node recursively (used by save_tree)
 void formatNode(Node* node, String& output, int indent = 0) {
     if (!node) return;
@@ -152,7 +179,7 @@ void processCommand(const String& topic, const String& payload,
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             Serial.println("JSON parse error in add");
-            mqtt->publish("esp32/status/error", "Invalid JSON for add");
+            publishError(mqtt, topic, "Invalid JSON for add");
             return;
         }
 
@@ -167,24 +194,24 @@ void processCommand(const String& topic, const String& payload,
 
         if (name == nullptr || String(name).length() == 0) {
             Serial.println("Missing 'name' in add");
-            mqtt->publish("esp32/status/error", "Missing 'name'");
+            publishError(mqtt, topic, "Missing 'name'");
             return;
         }
 
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/error", "Load tree unavailable");
+            publishError(mqtt, topic, "Load tree unavailable");
             Serial.println("Add failed: tree root unavailable");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Add failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Add failed: BFS mutex unavailable");
             return;
         }
@@ -192,7 +219,7 @@ void processCommand(const String& topic, const String& payload,
         String parentName = parent;
         if (!parentExists(bfs, parentName)) {
             xSemaphoreGive(bfsMutex);
-            publishParentMissingError(mqtt, parentName);
+            publishParentMissingError(mqtt, topic, parentName);
             return;
         }
 
@@ -200,7 +227,7 @@ void processCommand(const String& topic, const String& payload,
         if (bfs->getNode(name) != nullptr) {
             xSemaphoreGive(bfsMutex);
             String msg = String("Name already exists: ") + name;
-            mqtt->publish("esp32/status/error", msg.c_str());
+            publishError(mqtt, topic, msg.c_str());
             Serial.println(msg);
             return;
         }
@@ -210,14 +237,15 @@ void processCommand(const String& topic, const String& payload,
             xSemaphoreGive(bfsMutex);
             char msgBuf[64];
             snprintf(msgBuf, sizeof(msgBuf), "Pin %d already in use", pin);
-            mqtt->publish("esp32/status/error", msgBuf);
+            publishError(mqtt, topic, msgBuf);
             Serial.println(msgBuf);
             return;
         }
 
         Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, forced, voltage);
+        if (node) RelayControl::begin(node->relayPin);
         Serial.println(node ? "Node added" : "Add failed");
-        mqtt->publish("esp32/status/config/node_added", node ? name : "failed");
+        mqtt->publish(MQTTTopics::ConfigNodeAdded, node ? name : "failed");
 
         xSemaphoreGive(bfsMutex);
     }
@@ -228,7 +256,7 @@ void processCommand(const String& topic, const String& payload,
         DynamicJsonDocument doc(capacity);
         if (doc.capacity() == 0) {
             Serial.printf("Bulk add failed: out of memory (needed %d bytes)\n", capacity);
-            mqtt->publish("esp32/status/error", "Out of memory for bulk add");
+            publishError(mqtt, topic, "Out of memory for bulk add");
             return;
         }
 
@@ -236,7 +264,7 @@ void processCommand(const String& topic, const String& payload,
         if (err) {
             Serial.print("JSON parse error in bulk add: ");
             Serial.println(err.c_str());
-            mqtt->publish("esp32/status/error", "Invalid JSON array for bulk add");
+            publishError(mqtt, topic, "Invalid JSON array for bulk add");
             return;
         }
 
@@ -244,13 +272,13 @@ void processCommand(const String& topic, const String& payload,
         int count = 0;
         int skipped = 0;
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Bulk add failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Bulk add failed: BFS mutex unavailable");
             return;
         }
@@ -293,6 +321,7 @@ void processCommand(const String& topic, const String& payload,
 
             Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, forced, voltage);
             if (node) {
+                RelayControl::begin(node->relayPin);
                 count++;
                 Serial.println("Node added");
             } else {
@@ -303,7 +332,7 @@ void processCommand(const String& topic, const String& payload,
 
         char msg[64];
         snprintf(msg, sizeof(msg), "Added %d loads, skipped %d invalid entries", count, skipped);
-        mqtt->publish("esp32/status/config/bulk_added", msg);
+        mqtt->publish(MQTTTopics::ConfigBulkAdded, msg);
 
         xSemaphoreGive(bfsMutex);
     }
@@ -311,19 +340,19 @@ void processCommand(const String& topic, const String& payload,
     // ---- Update a load ----
     else if (topic == "esp32/command/config/update") {
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/error", "Load tree unavailable");
+            publishError(mqtt, topic, "Load tree unavailable");
             Serial.println("Update failed: tree root unavailable");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Update failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Update failed: BFS mutex unavailable");
             return;
         }
@@ -332,7 +361,7 @@ void processCommand(const String& topic, const String& payload,
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             Serial.println("JSON parse error in update");
-            mqtt->publish("esp32/status/error", "Invalid JSON for update");
+            publishError(mqtt, topic, "Invalid JSON for update");
             xSemaphoreGive(bfsMutex);
             return;
         }
@@ -340,7 +369,7 @@ void processCommand(const String& topic, const String& payload,
         const char* name = doc["name"];
         if (name == nullptr || String(name).length() == 0) {
             Serial.println("Missing 'name' in update");
-            mqtt->publish("esp32/status/error", "Missing 'name'");
+            publishError(mqtt, topic, "Missing 'name'");
             xSemaphoreGive(bfsMutex);
             return;
         }
@@ -352,7 +381,7 @@ void processCommand(const String& topic, const String& payload,
 
         bool ok = bfs->updateNode(name, amps, priority, forced, voltage);
         Serial.println(ok ? "Update OK" : "Update failed");
-        mqtt->publish("esp32/status/config/update_done", ok ? name : "failed");
+        mqtt->publish(MQTTTopics::ConfigUpdateDone, ok ? name : "failed");
 
         xSemaphoreGive(bfsMutex);
     }
@@ -360,19 +389,19 @@ void processCommand(const String& topic, const String& payload,
     // ---- Delete a load ----
     else if (topic == "esp32/command/config/delete") {
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/error", "Load tree unavailable");
+            publishError(mqtt, topic, "Load tree unavailable");
             Serial.println("Delete failed: tree root unavailable");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Delete failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Delete failed: BFS mutex unavailable");
             return;
         }
@@ -381,7 +410,7 @@ void processCommand(const String& topic, const String& payload,
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             Serial.println("JSON parse error in delete");
-            mqtt->publish("esp32/status/error", "Invalid JSON for delete");
+            publishError(mqtt, topic, "Invalid JSON for delete");
             xSemaphoreGive(bfsMutex);
             return;
         }
@@ -389,20 +418,20 @@ void processCommand(const String& topic, const String& payload,
         const char* name = doc["name"];
         if (name == nullptr || String(name).length() == 0) {
             Serial.println("Missing 'name' in delete");
-            mqtt->publish("esp32/status/error", "Missing 'name'");
+            publishError(mqtt, topic, "Missing 'name'");
             xSemaphoreGive(bfsMutex);
             return;
         }
 
         if (isRootNodeName(name)) {
-            mqtt->publish("esp32/status/error", "Cannot delete root node");
+            publishError(mqtt, topic, "Cannot delete root node");
             Serial.println("Delete failed: root node cannot be removed");
             xSemaphoreGive(bfsMutex);
             return;
         }
 
         bool removed = bfs->removeNode(name);
-        mqtt->publish("esp32/status/config/delete_done", removed ? name : "failed");
+        mqtt->publish(MQTTTopics::ConfigDeleteDone, removed ? name : "failed");
 
         xSemaphoreGive(bfsMutex);
     }
@@ -410,7 +439,7 @@ void processCommand(const String& topic, const String& payload,
     // ---- List all stored nodes ----
     else if (topic == "esp32/command/config/list") {
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/config/list", "[]");
+            mqtt->publish(MQTTTopics::ConfigList, "[]");
             Serial.println("=== Current Load Tree ===");
             Serial.println("Tree is empty.");
             Serial.println("=========================");
@@ -418,19 +447,19 @@ void processCommand(const String& topic, const String& payload,
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("List failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("List failed: BFS mutex unavailable");
             return;
         }
 
         if (bfs->getRoot()->children.empty()) {
-            mqtt->publish("esp32/status/config/list", "[]");
+            mqtt->publish(MQTTTopics::ConfigList, "[]");
             Serial.println("=== Current Load Tree ===");
             Serial.println("Tree is empty.");
             Serial.println("=========================");
@@ -444,16 +473,7 @@ void processCommand(const String& topic, const String& payload,
         std::function<void(Node*, JsonArray)> collectNodes = [&](Node* node, JsonArray parentArr) {
             if (!node) return;
             JsonObject obj = parentArr.createNestedObject();
-            obj["name"]     = node->name;
-            obj["amps"]     = node->currentDraw;
-            obj["voltage"]  = node->voltage;
-            obj["power_w"]  = node->power;
-            obj["energy_wh"] = node->energyWh;
-            obj["priority"] = node->priority;
-            obj["pin"]      = node->relayPin;
-            obj["forced"]   = node->isForced;
-            obj["forced_state"] = forcedStateLabel(node);
-            obj["active"]   = node->isActive;
+            MQTTResponse::addNode(obj, node);
 
             for (Node* child : node->children) {
                 collectNodes(child, parentArr);
@@ -466,7 +486,7 @@ void processCommand(const String& topic, const String& payload,
 
         String jsonStr;
         serializeJson(arr, jsonStr);
-        mqtt->publish("esp32/status/config/list", jsonStr.c_str());
+        mqtt->publish(MQTTTopics::ConfigList, jsonStr.c_str());
 
         Serial.println("=== Current Load Tree (JSON) ===");
         Serial.println(jsonStr);
@@ -478,18 +498,18 @@ void processCommand(const String& topic, const String& payload,
     // ---- Return relay pin usage status ----
     else if (topic == "esp32/command/config/pin_status") {
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/config/pin_status", "{\"used\":[],\"available\":[]}");
+            mqtt->publish(MQTTTopics::ConfigPinStatus, "{\"used\":[],\"available\":[]}");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Pin status failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Pin status failed: BFS mutex unavailable");
             return;
         }
@@ -513,7 +533,7 @@ void processCommand(const String& topic, const String& payload,
 
         String out;
         serializeJson(pinDoc, out);
-        mqtt->publish("esp32/status/config/pin_status", out.c_str());
+        mqtt->publish(MQTTTopics::ConfigPinStatus, out.c_str());
 
         xSemaphoreGive(bfsMutex);
     }
@@ -524,53 +544,43 @@ void processCommand(const String& topic, const String& payload,
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             Serial.println("JSON parse error in get_node");
-            mqtt->publish("esp32/status/error", "Invalid JSON for get_node");
+            publishError(mqtt, topic, "Invalid JSON for get_node");
             return;
         }
 
         const char* name = doc["name"];
         if (name == nullptr) {
             Serial.println("Missing 'name' in get_node");
-            mqtt->publish("esp32/status/error", "Missing 'name'");
+            publishError(mqtt, topic, "Missing 'name'");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Get node failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Get node failed: BFS mutex unavailable");
             return;
         }
 
         Node* node = bfs->getNode(name);
         if (!node) {
-            mqtt->publish("esp32/status/config/get_node", "{\"error\":\"not found\"}");
+            mqtt->publish(MQTTTopics::ConfigGetNode, "{\"error\":\"not found\"}");
             Serial.printf("Node '%s' not found\n", name);
             xSemaphoreGive(bfsMutex);
             return;
         }
 
         StaticJsonDocument<256> resp;
-        resp["name"]     = node->name;
-        resp["amps"]     = node->currentDraw;
-        resp["voltage"]  = node->voltage;
-        resp["power_w"]  = node->power;
-        resp["energy_wh"] = node->energyWh;
-        resp["priority"] = node->priority;
-        resp["pin"]      = node->relayPin;
-        resp["friction"] = node->wireFriction;
-        resp["forced"]   = node->isForced;
-        resp["forced_state"] = forcedStateLabel(node);
-        resp["active"]   = node->isActive;
+        MQTTResponse::addNode(resp.to<JsonObject>(), node);
 
         String jsonStr;
         serializeJson(resp, jsonStr);
-        mqtt->publish("esp32/status/config/get_node", jsonStr.c_str());
+        mqtt->publish(MQTTTopics::ConfigGetNode, jsonStr.c_str());
 
         Serial.println("=== Node Details ===");
         Serial.println(jsonStr);
@@ -582,19 +592,19 @@ void processCommand(const String& topic, const String& payload,
     // ---- Execute optimisation ----
     else if (topic == "esp32/command/control/execute") {
         if (!bfs->getRoot() || bfs->getRoot()->children.empty()) {
-            mqtt->publish("esp32/status/control/result", "Auto-optimisation skipped (tree empty)");
+            mqtt->publish(MQTTTopics::ControlResult, "Auto-optimisation skipped (tree empty)");
             Serial.println(">>> Auto-optimisation skipped (tree empty)");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Execute failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Execute failed: BFS mutex unavailable");
             return;
         }
@@ -612,12 +622,13 @@ void processCommand(const String& topic, const String& payload,
         if (available <= 0.0f) available = 10.0f;
 
         // Immediate confirmation
-        mqtt->publish("esp32/status/control/execute_received", "Running optimisation...");
+        mqtt->publish(MQTTTopics::ControlExecuteReceived, "Running optimisation...");
         Serial.println(">>> Execute command received, running optimisation...");
 
         auto candidates = bfs->scout(available);
-        float availablePower = available * battery_voltage;
+        float availablePower = available * 230.0f;
         bfs->execute(candidates, available, availablePower);
+        RelayControl::apply(candidates);
 
         // Serial output
         Serial.println("========= OPTIMISATION RESULT =========");
@@ -651,18 +662,7 @@ void processCommand(const String& topic, const String& payload,
             // If this node is an appliance (has a pin), include it
             if (node->relayPin != -1) {
                 JsonObject obj = loads.createNestedObject();
-                obj["name"] = node->name;
-                obj["parent"] = parentName;
-                obj["amps"] = node->currentDraw;
-                obj["voltage"] = node->voltage;
-                obj["power_w"] = node->power;
-                obj["energy_wh"] = node->energyWh;
-                obj["priority"] = node->priority;
-                obj["pin"] = node->relayPin;
-                obj["friction"] = node->wireFriction;
-                obj["forced"] = node->isForced;
-                obj["forced_state"] = forcedStateLabel(node);
-                obj["active"] = node->isActive;
+                MQTTResponse::addNode(obj, node, parentName);
             }
             for (Node* c : node->children) {
                 collectLoads(c, node->name);
@@ -676,7 +676,7 @@ void processCommand(const String& topic, const String& payload,
 
         String resultJson;
         serializeJson(resultDoc, resultJson);
-        mqtt->publish("esp32/status/control/result", resultJson.c_str());
+        mqtt->publish(MQTTTopics::ControlResult, resultJson.c_str());
 
         // Save to LittleFS
         if (!LittleFS.begin(true)) {
@@ -701,26 +701,26 @@ void processCommand(const String& topic, const String& payload,
     // ---- Save full tree to file ----
     else if (topic == "esp32/command/config/save_tree") {
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/error", "Load tree unavailable");
+            publishError(mqtt, topic, "Load tree unavailable");
             Serial.println("Save tree failed: tree root unavailable");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Save tree failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Save tree failed: BFS mutex unavailable");
             return;
         }
 
         if (!LittleFS.begin(true)) {
             Serial.println("LittleFS mount failed");
-            mqtt->publish("esp32/status/error", "LittleFS mount failed");
+            publishError(mqtt, topic, "LittleFS mount failed");
             xSemaphoreGive(bfsMutex);
             return;
         }
@@ -728,7 +728,7 @@ void processCommand(const String& topic, const String& payload,
         File treeFile = LittleFS.open("/tree.txt", FILE_WRITE);
         if (!treeFile) {
             Serial.println("Failed to create tree file");
-            mqtt->publish("esp32/status/error", "Cannot write tree file");
+            publishError(mqtt, topic, "Cannot write tree file");
             xSemaphoreGive(bfsMutex);
             return;
         }
@@ -739,7 +739,7 @@ void processCommand(const String& topic, const String& payload,
         treeFile.close();
         Serial.println("Tree saved to /tree.txt");
         Serial.println(treeStr);
-        mqtt->publish("esp32/status/config/tree_saved", "OK");
+        mqtt->publish(MQTTTopics::ConfigTreeSaved, "OK");
 
         xSemaphoreGive(bfsMutex);
     }
@@ -747,19 +747,19 @@ void processCommand(const String& topic, const String& payload,
     // ---- Return full nested tree as JSON ----
     else if (topic == "esp32/command/config/tree") {
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/config/tree", "{}");
+            mqtt->publish(MQTTTopics::ConfigTree, "{}");
             Serial.println("Tree request: tree unavailable");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Tree request failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Tree request failed: BFS mutex unavailable");
             return;
         }
@@ -792,7 +792,7 @@ void processCommand(const String& topic, const String& payload,
                 childObj["pin"] = c->relayPin;
                 childObj["friction"] = c->wireFriction;
                 childObj["forced"] = c->isForced;
-                childObj["forced_state"] = forcedStateLabel(c);
+                childObj["forced_state"] = MQTTResponse::forcedState(c);
                 childObj["active"] = c->isActive;
                 // Recursively add grandchildren
                 if (!c->children.empty()) {
@@ -806,7 +806,7 @@ void processCommand(const String& topic, const String& payload,
                             go["pin"] = g->relayPin;
                             go["friction"] = g->wireFriction;
                             go["forced"] = g->isForced;
-                            go["forced_state"] = forcedStateLabel(g);
+                            go["forced_state"] = MQTTResponse::forcedState(g);
                             go["active"] = g->isActive;
                             if (!g->children.empty()) {
                                 JsonArray sub = go.createNestedArray("children");
@@ -830,7 +830,7 @@ void processCommand(const String& topic, const String& payload,
             childObj["pin"] = child->relayPin;
             childObj["friction"] = child->wireFriction;
             childObj["forced"] = child->isForced;
-            childObj["forced_state"] = forcedStateLabel(child);
+            childObj["forced_state"] = MQTTResponse::forcedState(child);
             childObj["active"] = child->isActive;
             if (!child->children.empty()) {
                 JsonArray cArr = childObj.createNestedArray("children");
@@ -843,7 +843,7 @@ void processCommand(const String& topic, const String& payload,
                         go["pin"] = g->relayPin;
                         go["friction"] = g->wireFriction;
                         go["forced"] = g->isForced;
-                        go["forced_state"] = forcedStateLabel(g);
+                        go["forced_state"] = MQTTResponse::forcedState(g);
                         go["active"] = g->isActive;
                         if (!g->children.empty()) {
                             JsonArray sub = go.createNestedArray("children");
@@ -857,7 +857,7 @@ void processCommand(const String& topic, const String& payload,
 
         String out;
         serializeJson(rootObj, out);
-        mqtt->publish("esp32/status/config/tree", out.c_str());
+        mqtt->publish(MQTTTopics::ConfigTree, out.c_str());
         Serial.println("=== Tree JSON ===");
         Serial.println(out);
 
@@ -867,33 +867,33 @@ void processCommand(const String& topic, const String& payload,
     // ---- Manual relay toggle ----
     else if (topic.startsWith("esp32/command/control/relay/")) {
         if (!bfs->getRoot()) {
-            mqtt->publish("esp32/status/error", "Load tree unavailable");
+            publishError(mqtt, topic, "Load tree unavailable");
             Serial.println("Relay toggle failed: tree root unavailable");
             return;
         }
 
         if (bfsMutex == NULL) {
-            mqtt->publish("esp32/status/error", "Internal error: mutex unavailable");
+            publishError(mqtt, topic, "Internal error: mutex unavailable");
             Serial.println("Relay toggle failed: bfsMutex not created");
             return;
         }
 
         if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-            mqtt->publish("esp32/status/error", "BFS busy");
+            publishError(mqtt, topic, "BFS busy");
             Serial.println("Relay toggle failed: BFS mutex unavailable");
             return;
         }
 
         String nodeName = topic.substring(strlen("esp32/command/control/relay/"));
         if (nodeName.length() == 0) {
-            mqtt->publish("esp32/status/error", "Invalid relay node name");
+            publishError(mqtt, topic, "Invalid relay node name");
             xSemaphoreGive(bfsMutex);
             return;
         }
 
         Node* node = bfs->getNode(nodeName);
         if (!node || node->relayPin < 0) {
-            mqtt->publish("esp32/status/error", "Invalid relay node");
+            publishError(mqtt, topic, "Invalid relay node");
             xSemaphoreGive(bfsMutex);
             return;
         }
@@ -905,17 +905,22 @@ void processCommand(const String& topic, const String& payload,
         }
 
         if (state == "on" || state == "1") {
-            digitalWrite(node->relayPin, HIGH);
             node->isActive = true;
+            node->isForced = true;
+            RelayControl::set(node->relayPin, true);
         } else if (state == "off" || state == "0") {
-            digitalWrite(node->relayPin, LOW);
             node->isActive = false;
+            node->isForced = true;
+            RelayControl::set(node->relayPin, false);
+        } else if (state == "auto") {
+            node->isForced = false;
         } else {
-            mqtt->publish("esp32/status/error", "Invalid relay state (use 'on'/'off')");
+            publishError(mqtt, topic, "Invalid relay state (use 'on'/'off'/'auto')");
             xSemaphoreGive(bfsMutex);
             return;
         }
-        mqtt->publish("esp32/status/control/relay_changed", nodeName.c_str());
+        String relayBody = MQTTResponse::relayChanged(topic.c_str(), node, state.c_str());
+        mqtt->publish(MQTTTopics::ControlRelayChanged, relayBody.c_str());
 
         xSemaphoreGive(bfsMutex);
     }
