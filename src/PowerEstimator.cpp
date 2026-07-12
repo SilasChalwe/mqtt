@@ -1,56 +1,47 @@
 #include "../include/PowerEstimator.h"
+#include "../config/Config.h"
 
-float INVERTER_MAX_AMPS = 15.0; 
-
-PowerEstimator::PowerEstimator(SolarManager& solarInstance, float threshold)
-    : solar(solarInstance),
-      safetyThreshold(threshold),
-      _filteredSoC(0.0) {
-}
+PowerEstimator::PowerEstimator(float threshold)
+    : safetyThreshold(threshold), _filteredSoC(0.0f), _batteryVoltage(0.0f), _solarCurrent(0.0f), _solarPower(0.0f) {}
 
 void PowerEstimator::begin() {
-    // Default the estimator to zero until the first valid sensor update occurs.
     _filteredSoC = 0.0f;
+    _batteryVoltage = 0.0f;
+    _solarCurrent = 0.0f;
+    _solarPower = 0.0f;
 }
 
-void PowerEstimator::updateSensors() {
-    solar.update();
-    updateBattery();
-
-    float currentSoC = battery_soc / 100.0;
-    _filteredSoC = (currentSoC * _filterAlpha) + (_filteredSoC * (1.0 - _filterAlpha));
+void PowerEstimator::update(float batterySocPercent, float batteryVoltage, float solarCurrent, float solarPower) {
+    float currentSoC = batterySocPercent / 100.0f;
+    _filteredSoC = (currentSoC * _filterAlpha) + (_filteredSoC * (1.0f - _filterAlpha));
+    _batteryVoltage = batteryVoltage;
+    _solarCurrent = solarCurrent;
+    _solarPower = solarPower;
 }
 
-float PowerEstimator::get_CAvailable(float batteryAhTotal,
-                                     float targetRuntimeHours,
-                                     float forcedLoadsCurrent) {
+float PowerEstimator::getAvailableCurrent(float batteryAhTotal,
+                                          float targetRuntimeHours,
+                                          float forcedLoadsCurrent) const {
+    if (targetRuntimeHours <= 0) targetRuntimeHours = 1.0f;
 
-    if (targetRuntimeHours <= 0) targetRuntimeHours = 1.0;
-
-    // 1. Calculate usable Battery SoC in Amp-Hours
     float usableSoC = _filteredSoC - safetyThreshold;
-    if (usableSoC < 0.0) usableSoC = 0.0;
-    float battery_Ah_buffer = batteryAhTotal * usableSoC;
+    if (usableSoC < 0.0f) usableSoC = 0.0f;
+    float batteryAhBuffer = batteryAhTotal * usableSoC;
 
-    // 2. YOUR IMAGE FORMULA: (Battery_SoC + Live_Solar) / Target_Runtime
-    float capacityRate = (battery_Ah_buffer + solar.getCurrent()) / targetRuntimeHours;
-
-    // 3. Apply min(Inverter_Max_Output, capacityRate)
+    float capacityRate = (batteryAhBuffer + _solarCurrent) / targetRuntimeHours;
     float budget = (capacityRate < INVERTER_MAX_AMPS) ? capacityRate : INVERTER_MAX_AMPS;
-
-    // 4. Subtract Forced Loads
     float result = budget - forcedLoadsCurrent;
 
-    return (result > 0.0) ? result : 0.0;
+    return (result > 0.0f) ? result : 0.0f;
 }
 
-float PowerEstimator::get_EstimatedRuntime(float batteryAh,
-                                           float totalLoadCurrent) {
-    float net = totalLoadCurrent - solar.getCurrent();
-    if (net <= 0.0) return 99.9; 
+float PowerEstimator::getEstimatedRuntimeHours(float batteryAh,
+                                               float totalLoadCurrent) const {
+    float net = totalLoadCurrent - _solarCurrent;
+    if (net <= 0.0f) return 99.9f;
 
     float usableAh = batteryAh * (_filteredSoC - safetyThreshold);
-    if (usableAh <= 0.0) return 0.0;
+    if (usableAh <= 0.0f) return 0.0f;
 
     return usableAh / net;
 }

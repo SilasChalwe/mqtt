@@ -1,5 +1,8 @@
 #include "config/Config.h"
-#include "include/Battery.h"
+#include "include/MQTTTopics.h"
+#include "include/MQTTResponse.h"
+#include "include/RelayControl.h"
+#include "include/BatteryManager.h"
 #include "include/SolarManager.h"
 #include "include/PowerEstimator.h"
 #include "include/WiFiManager.h"
@@ -14,17 +17,16 @@ static float sanitizeReading(float value) {
     return (isnan(value) || isinf(value)) ? 0.0f : value;
 }
 
-// Shared sensor globals required by Battery.h and SolarManager.
+// Shared physical INA219 sensor used by battery and solar managers.
 Adafruit_INA219 ina219;
-float battery_soc = 0.0f;
-float battery_voltage = 0.0f;
 
 
 WiFiManager wifi;
 MQTTManager mqtt;
 BestFirstSearch bfs;
-SolarManager solar(35);
-PowerEstimator estimator(solar, 0.2);
+BatteryManager battery(ina219, BATTERY_VOLTAGE_MIN, BATTERY_VOLTAGE_MAX, BATTERY_CAPACITY_AH);
+SolarManager solar(ina219, SOLAR_VOLTAGE_ADC_PIN, SOLAR_VOLTAGE_DIVIDER_RATIO);
+PowerEstimator estimator(0.2f);
 
 // FreeRTOS task handles
 TaskHandle_t tempTaskHandle = NULL;
@@ -51,14 +53,15 @@ static bool canRunOptimisation() {
 
 void runOptimisation(float availableCurrent) {
     if (!canRunOptimisation()) {
-        mqtt.publish("esp32/status/control/result", "Auto-optimisation skipped (tree empty)");
+        mqtt.publish(MQTTTopics::ControlResult, "Auto-optimisation skipped (tree empty)");
         return;
     }
 
     if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
         auto candidates = bfs.scout(availableCurrent);
-        float availablePower = availableCurrent * battery_voltage;
+        float availablePower = availableCurrent * battery.voltage();
         bfs.execute(candidates, availableCurrent, availablePower);
+        RelayControl::apply(candidates);
 
         // Build JSON with all loads (attributes + active state)
         DynamicJsonDocument resultDoc(2048);
@@ -73,15 +76,7 @@ void runOptimisation(float availableCurrent) {
             if (!node) return;
             if (node->relayPin != -1) {
                 JsonObject obj = loads.createNestedObject();
-                obj["name"] = node->name;
-                obj["parent"] = parentName;
-                obj["amps"] = node->currentDraw;
-                obj["priority"] = node->priority;
-                obj["pin"] = node->relayPin;
-                obj["friction"] = node->wireFriction;
-                obj["forced"] = node->isForced;
-                obj["forced_state"] = node->isForced ? (node->isActive ? "forced_on" : "forced_off") : "not_forced";
-                obj["active"] = node->isActive;
+                MQTTResponse::addNode(obj, node, parentName);
             }
             for (Node* c : node->children) collectLoads(c, node->name);
         };
@@ -95,11 +90,11 @@ void runOptimisation(float availableCurrent) {
 
         xSemaphoreGive(bfsMutex);
 
-        mqtt.publish("esp32/status/control/result", resultJson.c_str());
+        mqtt.publish(MQTTTopics::ControlResult, resultJson.c_str());
         Serial.println(">>> Auto-optimisation result (JSON):");
         Serial.println(resultJson);
     } else {
-        mqtt.publish("esp32/status/control/result", "Auto-optimisation skipped (mutex unavailable)");
+        mqtt.publish(MQTTTopics::ControlResult, "Auto-optimisation skipped (mutex unavailable)");
         Serial.println(">>> Auto-optimisation skipped: failed to acquire BFS mutex");
     }
 }
@@ -149,17 +144,18 @@ void powerPublishTask(void *pvParameters) {
     while (true) {
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
 
-        // Update sensor readings and estimator state.
+        // Update sensors once, then feed the already-read values into the estimator.
         solar.update();
-        updateBattery();
-        estimator.updateSensors();
+        battery.update();
 
-        float currentBatteryVoltage = sanitizeReading(battery_voltage);
-        float currentBatterySoC = sanitizeReading(battery_soc);
+        float currentBatteryVoltage = sanitizeReading(battery.voltage());
+        float currentBatterySoC = sanitizeReading(battery.soc());
         float currentSolarVoltage = sanitizeReading(solar.getVoltage());
         float currentSolarCurrent = sanitizeReading(solar.getCurrent());
         float currentSolarPower = sanitizeReading(solar.getPower());
         float currentSolarEnergy = sanitizeReading(solar.getEnergyWh());
+
+        estimator.update(currentBatterySoC, currentBatteryVoltage, currentSolarCurrent, currentSolarPower);
 
         String timeStr = TimeManager::isTimeValid()
                          ? TimeManager::getFormattedTime("%Y-%m-%d %H:%M:%S")
@@ -195,10 +191,10 @@ void powerPublishTask(void *pvParameters) {
         estimatorDoc["solar_current"] = sanitizeReading(estimator.get_SolarCurrent());
         estimatorDoc["solar_power_w"] = sanitizeReading(currentSolarVoltage * currentSolarCurrent);
         estimatorDoc["battery_power_w"] = sanitizeReading(currentBatteryVoltage * std::max(0.0f, estimator.get_SolarCurrent()));
-        float availableCurrent = estimator.get_CAvailable(BATTERY_CAPACITY_AH, ESTIMATOR_RUNTIME_HOURS, ESTIMATOR_FORCED_LOADS);
+        float availableCurrent = estimator.getAvailableCurrent(BATTERY_CAPACITY_AH, ESTIMATOR_RUNTIME_HOURS, ESTIMATOR_FORCED_LOADS);
         estimatorDoc["available_current"] = sanitizeReading(availableCurrent);
         estimatorDoc["available_power_w"] = sanitizeReading(availableCurrent * currentBatteryVoltage);
-        estimatorDoc["estimated_runtime_h"] = sanitizeReading(estimator.get_EstimatedRuntime(BATTERY_CAPACITY_AH, ESTIMATOR_FORCED_LOADS));
+        estimatorDoc["estimated_runtime_h"] = sanitizeReading(estimator.getEstimatedRuntimeHours(BATTERY_CAPACITY_AH, ESTIMATOR_FORCED_LOADS));
         estimatorDoc["energy_wh"] = sanitizeReading(currentSolarEnergy);
         estimatorDoc["time"] = timeStr;
         String estimatorJson;
@@ -227,7 +223,11 @@ void setup() {
     mqtt.begin(MQTT_HOST, MQTT_PORT, MQTT_CLIENT_ID);
 
     // Initialize battery and solar sensor state before telemetry publishing.
-    initBattery();
+    if (!battery.begin()) {
+        while (true) {
+            delay(1000);
+        }
+    }
     solar.begin();
     estimator.begin();
 

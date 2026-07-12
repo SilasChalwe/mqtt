@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "../include/MQTTManager.h"
 #include "../include/CommandHandler.h"      // <-- ADD THIS LINE
+#include "../include/MQTTTopics.h"
 #include "esp_crt_bundle.h"
 #include <stdio.h>
 
@@ -66,19 +67,13 @@ void MQTTManager::handleEvent(int32_t event_id, esp_mqtt_event_handle_t event) {
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
             Serial.println("MQTT connected!");
-            subscribe("test/topic");
-            subscribe("esp32/#");
+            subscribe(MQTTTopics::CommandWildcard);
             break;
 
         case MQTT_EVENT_DATA: {            // <-- OPEN BRACE HERE (FIX)
             String topic   = String(event->topic, event->topic_len);
             String payload = String(event->data, event->data_len);
             Serial.printf("Topic: %s, Payload: %s\n", topic.c_str(), payload.c_str());
-
-            if (topic == "test/topic") {
-                Serial.println("--- Incoming test message ---");
-                Serial.println(payload);
-            }
 
             // Delegate to CommandHandler via queue (non-blocking for MQTT thread)
             if (!enqueueCommand(topic, payload)) {
