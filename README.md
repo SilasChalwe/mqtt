@@ -481,6 +481,19 @@ This repository also includes validation and verification tooling for both firmw
 - `validate/combined.py` runs simulated battery/solar scenarios and can generate CSV and plot output.
 - `validate/README.md` documents command-line usage and example workflows.
 
+### Example validation output
+
+![Validation comparison chart](validate/png/bfs_run_comparison.png)
+
+The bottom panel of the chart shows solar behaviour for both managed and unmanaged cases:
+
+- **Blue**: managed solar current
+- **Orange dashed**: managed solar power
+- **Green**: unmanaged solar current
+- **Red dashed**: unmanaged solar power
+
+The upper panels show battery voltage and state of charge for the same managed/unmanaged scenarios.
+
 ## Build and upload
 
 1. Open this folder in the Arduino IDE or PlatformIO.

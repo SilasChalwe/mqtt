@@ -4,6 +4,7 @@ import argparse
 import csv
 from collections import defaultdict
 from datetime import datetime
+import json
 import math
 from datetime import datetime, timedelta
 import os
@@ -91,6 +92,31 @@ def parse_datetime(value):
         except ValueError:
             continue
     raise ValueError(f'Unrecognized datetime format: {value}')
+def build_tree_from_json(bfs, tree_data):
+    if isinstance(tree_data, list):
+        tree_data = {'name': 'Main_DB', 'children': tree_data}
+    if not isinstance(tree_data, dict):
+        raise ValueError('Tree JSON must be an object or array of nodes')
+    if tree_data.get('name') != 'Main_DB':
+        tree_data = {'name': 'Main_DB', 'children': [tree_data]}
+
+    def add_node(node_json, parent_name):
+        name = node_json.get('name')
+        if not name:
+            raise ValueError('Each tree node must have a name')
+        if name != 'Main_DB':
+            amps = float(node_json.get('amps', 0.0))
+            priority = int(node_json.get('priority', 0))
+            pin = int(node_json.get('pin', -1))
+            friction = float(node_json.get('friction', 0.0))
+            forced = bool(node_json.get('forced', False))
+            voltage = float(node_json.get('voltage', 12.0))
+            bfs.create_node(parent_name, name, amps, priority, pin, friction, forced, voltage)
+        for child in node_json.get('children', []):
+            add_node(child, name if name != 'Main_DB' else parent_name)
+
+    add_node(tree_data, 'Main_DB')
+
 def load_battery_rows(path):
     rows = []
     with open(path, newline='', encoding='utf-8') as fp:
@@ -252,7 +278,7 @@ def main():
     parser.add_argument('csv_files', nargs='+', help='Telemetry CSV files produced by telemetry_logger.py')
     parser.add_argument('--labels', nargs='*', help='Optional labels for each run. Defaults to file names.')
     parser.add_argument('--output', help='Optional PNG file to save the plot')
-    parser.add_argument('--samples', type=int, default=None, help='Resample points for smoothing (e.g., 500)')
+    parser.add_argument('--samples', type=int, default=500, help='Resample points for smoothing (default: 500)')
     args = parser.parse_args()
     if args.labels and len(args.labels) != len(args.csv_files):
         parser.error('--labels must be provided once per CSV file')
@@ -410,17 +436,20 @@ class BestFirstSearch:
         for i in range(N):
             n = candidates[i]
             n.isActive = selected[i]
-def run_sim(output_path, hours=4, interval_s=60, capacity_ah=100.0, initial_soc=90.0, solar_peak=2.0, battery_discharge_limit=5.0, target_runtime_hours=1.0, start_time=None, loads=None):
+def run_sim(output_path, hours=4, interval_s=60, capacity_ah=100.0, initial_soc=90.0, solar_peak=2.0, battery_discharge_limit=5.0, target_runtime_hours=1.0, start_time=None, loads=None, tree=None):
     bfs = BestFirstSearch()
-    if loads is None:
-        loads = [1.0, 1.5, 2.0]
-    # Build a simple dynamic tree with one parent group and one child per load
-    group_name = 'dynamic_group'
-    bfs.create_node('Main_DB', group_name, 0.0, 0, -1, 0.0, False, 0.0)
-    for idx, load in enumerate(loads):
-        load_name = f'load_{idx + 1}'
-        forced = idx == 0
-        bfs.create_node(group_name, load_name, float(load), 10 + idx, 100 + idx, 0.0, forced, 12.0)
+    if tree is not None:
+        build_tree_from_json(bfs, tree)
+    else:
+        if loads is None:
+            loads = [1.0, 1.5, 2.0]
+        # Build a simple dynamic tree with one parent group and one child per load
+        group_name = 'dynamic_group'
+        bfs.create_node('Main_DB', group_name, 0.0, 0, -1, 0.0, False, 0.0)
+        for idx, load in enumerate(loads):
+            load_name = f'load_{idx + 1}'
+            forced = idx == 0
+            bfs.create_node(group_name, load_name, float(load), 10 + idx, 100 + idx, 0.0, forced, 12.0)
     # Use local SolarManagerStub and PowerEstimator defined above
     solar = SolarManagerStub()
     estimator = PowerEstimator(solar, threshold=0.05, filter_alpha=0.2)
@@ -534,7 +563,7 @@ def run_sim(output_path, hours=4, interval_s=60, capacity_ah=100.0, initial_soc=
     print(f'Wrote {len(rows)} rows to {output_path}')
 def main_from_bfs_simulator():
     parser = argparse.ArgumentParser(description='BFS simulator and validation runner')
-    parser.add_argument('--output', '-o', default='validate/bfs_run.csv', help='Output CSV for single run')
+    parser.add_argument('--output', '-o', default='validate/csv/bfs_run.csv', help='Output CSV for single run')
     parser.add_argument('--hours', type=float, default=2.0, help='Simulation duration (hours)')
     parser.add_argument('--interval', type=int, default=60, help='Sample interval (seconds)')
     parser.add_argument('--capacity', type=float, default=100.0, help='Battery capacity (Ah)')
@@ -544,11 +573,13 @@ def main_from_bfs_simulator():
     parser.add_argument('--target-runtime-hours', type=float, default=1.0, help='Estimator target runtime (hours)')
     parser.add_argument('--suite', action='store_true', help='Run validation suite for targets [24,5,13,9]')
     parser.add_argument('--targets', nargs='+', type=int, help='Custom list of target runtimes (hours) for suite')
-    parser.add_argument('--samples', type=int, default=None, help='Resample points for smoothing plots (e.g., 500)')
+    parser.add_argument('--samples', type=int, default=500, help='Resample points for smoothing plots (default: 500)')
     parser.add_argument('--cleanup', action='store_true', help='Delete intermediate managed/unmanaged CSVs after plotting')
     parser.add_argument('--start-time', default=None, help='Optional ISO8601 start time for the simulation (defaults to the current system time, e.g. 2026-07-12T10:00:00)')
     parser.add_argument('--loads', nargs='+', type=float, default=None, help='Dynamic list of load currents (A) to include in the simulation')
     args = parser.parse_args()
+    with open('validate/house_tree.json', 'r', encoding='utf-8') as fp:
+        tree_data = json.load(fp)
     if args.suite:
         if args.targets:
             targets = args.targets
@@ -560,7 +591,7 @@ def main_from_bfs_simulator():
             target_label = str(int(t)) if float(t).is_integer() else str(t)
             out = f'validate/csv/bfs_run_{target_label}h.csv'
             print(f'Running simulation for target {target_label}h -> {out}')
-            run_sim(out, hours=args.hours, interval_s=args.interval, capacity_ah=args.capacity, initial_soc=args.initial_soc, solar_peak=args.solar_peak, battery_discharge_limit=args.discharge_limit, target_runtime_hours=t, start_time=args.start_time, loads=args.loads)
+            run_sim(out, hours=args.hours, interval_s=args.interval, capacity_ah=args.capacity, initial_soc=args.initial_soc, solar_peak=args.solar_peak, battery_discharge_limit=args.discharge_limit, target_runtime_hours=t, start_time=args.start_time, loads=args.loads, tree=tree_data)
             managed = f'validate/csv/bfs_run_{target_label}h_managed.csv'
             unmanaged = f'validate/csv/bfs_run_{target_label}h_unmanaged.csv'
             with open(out, newline='', encoding='utf-8') as fp_in, open(managed, 'w', newline='', encoding='utf-8') as fp_man, open(unmanaged, 'w', newline='', encoding='utf-8') as fp_un:
@@ -593,7 +624,7 @@ def main_from_bfs_simulator():
                     print('Failed to delete intermediate files:', ex)
         print('Suite complete')
     else:
-        run_sim(args.output, hours=args.hours, interval_s=args.interval, capacity_ah=args.capacity, initial_soc=args.initial_soc, solar_peak=args.solar_peak, battery_discharge_limit=args.discharge_limit, target_runtime_hours=args.target_runtime_hours, start_time=args.start_time, loads=args.loads)
+        run_sim(args.output, hours=args.hours, interval_s=args.interval, capacity_ah=args.capacity, initial_soc=args.initial_soc, solar_peak=args.solar_peak, battery_discharge_limit=args.discharge_limit, target_runtime_hours=args.target_runtime_hours, start_time=args.start_time, loads=args.loads, tree=tree_data)
 
 
 def _run_extracted_mains():

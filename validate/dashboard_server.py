@@ -48,8 +48,24 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             
             # Calculate hours from time range
             from datetime import datetime
-            start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-            end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            def parse_iso_time(value):
+                if value is None:
+                    raise ValueError('Missing start_time or end_time')
+                if not isinstance(value, str):
+                    raise ValueError('Invalid datetime format')
+                normalized = value.strip()
+                # Accept ISO strings with Z, with explicit offset, or both.
+                if normalized.endswith('Z'):
+                    normalized = normalized[:-1]
+                if normalized.endswith('+00:00'):
+                    normalized = normalized[:-6] + '+00:00'
+                try:
+                    return datetime.fromisoformat(normalized)
+                except ValueError:
+                    raise ValueError(f'Unrecognized datetime format: {value}')
+
+            start_dt = parse_iso_time(start_time)
+            end_dt = parse_iso_time(end_time)
             hours = (end_dt - start_dt).total_seconds() / 3600.0
             if hours <= 0:
                 hours = 24.0
