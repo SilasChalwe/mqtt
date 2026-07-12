@@ -374,10 +374,18 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
-        float amps   = doc["amps"] | -1.0f;
-        float voltage = doc["voltage"] | -1.0f;
-        int priority = doc["priority"] | -1;
-        bool forced  = doc["forced"] | false;
+        Node* existing = bfs->getNode(name);
+        if (!existing) {
+            Serial.println("Update failed: node not found");
+            mqtt->publish(MQTTTopics::ConfigUpdateDone, "failed");
+            xSemaphoreGive(bfsMutex);
+            return;
+        }
+
+        float amps = doc.containsKey("amps") ? doc["amps"].as<float>() : existing->currentDraw;
+        float voltage = doc.containsKey("voltage") ? doc["voltage"].as<float>() : existing->voltage;
+        int priority = doc.containsKey("priority") ? doc["priority"].as<int>() : existing->priority;
+        bool forced = doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isForced;
 
         bool ok = bfs->updateNode(name, amps, priority, forced, voltage);
         Serial.println(ok ? "Update OK" : "Update failed");

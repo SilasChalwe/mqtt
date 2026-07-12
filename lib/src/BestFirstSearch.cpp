@@ -218,12 +218,15 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
         }
     }
 
-    // Physical Actuation and energy accounting
+    // Energy accounting must use the state that was active during the
+    // elapsed interval.  Accumulate before applying the newly selected state
+    // so transitions from ON->OFF do not drop the just-finished runtime and
+    // transitions from OFF->ON do not backfill energy for idle time.
     unsigned long nowMs = millis();
     for (int i = 0; i < N; i++) {
         Node* n = candidates[i];
         if (n->relayPin == -1) continue;
-        n->isActive = selected[i];
         n->accumulateEnergy(nowMs);
+        n->isActive = selected[i];
     }
 }
