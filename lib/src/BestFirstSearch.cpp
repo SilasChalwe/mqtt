@@ -6,7 +6,7 @@
 
 BestFirstSearch::BestFirstSearch() {
     // Root is the entry point (the very top circle in your image)
-    rootName = "root";
+    rootName = "Main_DB";
     root = new Node();
     root->id = 0;
     root->name = rootName;

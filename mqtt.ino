@@ -219,6 +219,17 @@ void setup() {
 
     TimeManager::begin(NTP_SERVER, GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC);
 
+    bfsMutex = xSemaphoreCreateMutex();
+    if (!bfsMutex) {
+        Serial.println("Failed to create BFS mutex");
+        while (true) {
+            delay(1000);
+        }
+    }
+
+    // Initialize the command queue and processor task before MQTT callbacks can arrive.
+    initCommandQueue(&bfs, &mqtt);
+
     mqtt.setBFS(&bfs);
     mqtt.begin(MQTT_HOST, MQTT_PORT, MQTT_CLIENT_ID);
 
@@ -230,17 +241,6 @@ void setup() {
     }
     solar.begin();
     estimator.begin();
-
-    bfsMutex = xSemaphoreCreateMutex();
-    if (!bfsMutex) {
-        Serial.println("Failed to create BFS mutex");
-        while (true) {
-            delay(1000);
-        }
-    }
-
-    // Initialize the command queue and processor task (Option B)
-    initCommandQueue(&bfs, &mqtt);
 
     if (!bfs.getRoot()) {
         Serial.println("Warning: BFS root not initialized. Optimisation will be skipped until tree is populated.");
