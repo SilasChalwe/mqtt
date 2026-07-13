@@ -22,6 +22,25 @@ BestFirstSearch::BestFirstSearch() {
     root->isActive = true;
 }
 
+void BestFirstSearch::clear() {
+    if (!root) return;
+    for (Node* child : root->children) {
+        recursiveDelete(child);
+    }
+    root->children.clear();
+    root->name = rootName;
+    root->currentDraw = 0.0f;
+    root->voltage = 0.0f;
+    root->power = 0.0f;
+    root->energyWh = 0.0f;
+    root->lastActiveUpdateMs = millis();
+    root->priority = 0;
+    root->relayPin = -1;
+    root->isForced = true;
+    root->wireFriction = 0.0f;
+    root->isActive = true;
+}
+
 Node* BestFirstSearch::findByName(Node* current, const String& name) {
     if (!current) return nullptr;
     if (current->name == name) return current;
@@ -168,6 +187,20 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
         if (!candidates[i]->isForced) nonForcedIndices.push_back(i);
     }
     int M = nonForcedIndices.size();
+
+    const size_t cells = (size_t)(M + 1) * (size_t)(remainingC + 1) * (size_t)(remainingW + 1);
+    const size_t bytes = cells * sizeof(int);
+    const size_t MAX_DP_BYTES = 120 * 1024;
+    if (bytes > MAX_DP_BYTES) {
+#ifdef ARDUINO
+        Serial.printf("Optimisation skipped: DP table too large (%u bytes)\n", (unsigned)bytes);
+#endif
+        unsigned long nowMs = millis();
+        for (Node* n : candidates) {
+            if (n && n->relayPin != -1) n->accumulateEnergy(nowMs);
+        }
+        return;
+    }
 
     auto index = [&](int i, int c, int w) {
         return ((i * (remainingC + 1)) + c) * (remainingW + 1) + w;

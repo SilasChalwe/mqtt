@@ -9,6 +9,7 @@
 #include "include/MQTTManager.h"
 #include "include/CommandHandler.h"
 #include "include/TimeManager.h"
+#include "include/TreeStorage.h"
 #include "lib/src/BestFirstSearch.h"
 #include <ArduinoJson.h>
 #include <cmath>
@@ -62,6 +63,7 @@ void runOptimisation(float availableCurrent) {
         float availablePower = availableCurrent * battery.voltage();
         bfs.execute(candidates, availableCurrent, availablePower);
         RelayControl::apply(candidates);
+        TreeStorage::save(bfs);
 
         // Build JSON with all loads (attributes + active state)
         DynamicJsonDocument resultDoc(2048);
@@ -225,6 +227,11 @@ void setup() {
         while (true) {
             delay(1000);
         }
+    }
+
+    TreeStorage::begin();
+    if (!TreeStorage::load(bfs)) {
+        Serial.println("Warning: failed to restore /tree.txt; continuing with current in-memory tree");
     }
 
     // Initialize the command queue and processor task before MQTT callbacks can arrive.

@@ -19,6 +19,7 @@ public:
     BestFirstSearch();
     
     Node* getRoot() { return root; }
+    void clear();
 
     // [CREATE] Define new nodes and link them automatically to a parent
     Node* createAndAddNode(const String& parentName, const String& name, float amps, int priority, int pin, float friction = 0.1, bool forced = false, float voltage = 230.0f);
