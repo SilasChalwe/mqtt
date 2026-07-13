@@ -85,83 +85,334 @@ The device subscribes to command topics under the esp32/command namespace and pu
 
 ### Subscription topics (commands the device listens for)
 
-The firmware subscribes to the wildcard topic esp32/# and handles the following command topics:
+The firmware subscribes to the wildcard topic esp32/# and handles the following command topics.
+
+#### Quick payload reference
+
+| Topic | Payload type | Required fields | Optional fields |
+| --- | --- | --- | --- |
+| esp32/command/config/add | JSON object | name, amps | parent, voltage, priority, pin, friction, type |
+| esp32/command/config/add_bulk | JSON array of objects | each object needs name and amps | parent, voltage, priority, pin, friction, type |
+| esp32/command/config/update | JSON object | name | amps, voltage, priority, type |
+| esp32/command/config/delete | JSON object | name | none |
+| esp32/command/config/get_node | JSON object | name | none |
+| esp32/command/config/list | empty payload | none | none |
+| esp32/command/config/pin_status | empty payload | none | none |
+| esp32/command/config/save_tree | empty payload | none | none |
+| esp32/command/config/tree | empty payload | none | none |
+| esp32/command/control/execute | JSON object or plain text | none | available_current |
+| esp32/command/control/relay/<node_name> | plain text or JSON object | state | none |
 
 #### Configuration commands
 
-- esp32/command/config/add
-  - Add a single load.
-  - Payload example:
+- Topic: esp32/command/config/add
+  - Purpose: Add one load node to the tree.
+  - Exact payload shape:
+    ```json
     {
+      "parent": "Main_DB",
       "name": "Fridge",
       "amps": 1.2,
-      "pin": 17,
+      "voltage": 230,
       "priority": 5,
+      "pin": 17,
+      "friction": 0.1,
       "type": "auto"
     }
+    ```
+  - Field notes:
+    - name must be unique across the whole tree.
+    - amps is the load current draw in amps.
+    - pin is optional; use -1 if the node should not control a relay.
+    - type accepts "auto", "fixed", true, or false.
+    - parent defaults to Main_DB if omitted.
 
-- esp32/command/config/add_bulk
-  - Add multiple loads in a JSON array.
+- Topic: esp32/command/config/add_bulk
+  - Purpose: Add several load nodes in one request.
+  - Exact payload shape:
+    ```json
+    [
+      {
+        "parent": "Main_DB",
+        "name": "Fridge",
+        "amps": 1.2,
+        "voltage": 230,
+        "priority": 5,
+        "pin": 17,
+        "friction": 0.1,
+        "type": "auto"
+      },
+      {
+        "parent": "Main_DB",
+        "name": "Lights",
+        "amps": 0.8,
+        "voltage": 230,
+        "priority": 3,
+        "pin": 18,
+        "friction": 0.05,
+        "type": "fixed"
+      }
+    ]
+    ```
+  - Each array item uses the same fields as the single-add payload.
 
-- esp32/command/config/update
-  - Update an existing load's parameters.
+- Topic: esp32/command/config/update
+  - Purpose: Update an existing node.
+  - Exact payload shape:
+    ```json
+    {
+      "name": "Fridge",
+      "amps": 1.5,
+      "voltage": 230,
+      "priority": 7,
+      "type": "fixed"
+    }
+    ```
+  - The node identified by name must already exist.
 
-- esp32/command/config/delete
-  - Remove a load by name.
+- Topic: esp32/command/config/delete
+  - Purpose: Delete a load node by name.
+  - Exact payload shape:
+    ```json
+    {
+      "name": "Fridge"
+    }
+    ```
+  - The root node Main_DB cannot be deleted.
 
-- esp32/command/config/list
-  - Return the current load tree.
+- Topic: esp32/command/config/list
+  - Purpose: Return the full list of nodes.
+  - Payload: send an empty message, or no payload at all.
 
-- esp32/command/config/pin_status
-  - Report used and available relay pins.
+- Topic: esp32/command/config/pin_status
+  - Purpose: Return the used and available relay pins.
+  - Payload: send an empty message, or no payload at all.
 
-- esp32/command/config/get_node
-  - Retrieve details for a specific node.
+- Topic: esp32/command/config/get_node
+  - Purpose: Return details for one node.
+  - Exact payload shape:
+    ```json
+    {
+      "name": "Fridge"
+    }
+    ```
 
-- esp32/command/config/save_tree
-  - Persist the current tree to LittleFS.
+- Topic: esp32/command/config/save_tree
+  - Purpose: Save the current tree to LittleFS as /tree.txt.
+  - Payload: send an empty message, or no payload at all.
 
-- esp32/command/config/tree
-  - Return the full nested tree as JSON.
+- Topic: esp32/command/config/tree
+  - Purpose: Return the full nested tree as JSON.
+  - Payload: send an empty message, or no payload at all.
 
 #### Control commands
 
-- esp32/command/control/execute
-  - Run optimisation now.
-  - Optional payload example:
-    {"available_current": 10}
+- Topic: esp32/command/control/execute
+  - Purpose: Run optimisation immediately.
+  - Exact payload shape (JSON):
+    ```json
+    {
+      "available_current": 10
+    }
+    ```
+  - Plain-text alternative:
+    ```text
+    10
+    ```
+  - If the payload is missing or invalid, the firmware falls back to a default value.
 
-- esp32/command/control/relay/<node_name>
-  - Manually force a relay node to on, off, or auto.
-  - Payload examples:
-    - on
-    - off
-    - auto
+- Topic: esp32/command/control/relay/<node_name>
+  - Purpose: Toggle a relay-controlled node manually.
+  - Exact payload shape (plain text):
+    ```text
+    on
+    ```
+    ```text
+    off
+    ```
+    ```text
+    auto
+    ```
+  - JSON alternative:
+    ```json
+    {
+      "state": "on"
+    }
+    ```
+  - Replace <node_name> with the actual node name, for example:
+    ```text
+    esp32/command/control/relay/Fridge
+    ```
 
 ### Publication topics (data the device sends)
 
 #### Telemetry topics
 
-- esp32/telemetry/temperature
-- esp32/telemetry/battery
-- esp32/telemetry/solar
-- esp32/telemetry/estimator
+- Topic: esp32/telemetry/temperature
+  - Payload example:
+    ```json
+    {
+      "temp": 24.5,
+      "time": "2026-07-13 12:34:56"
+    }
+    ```
+
+- Topic: esp32/telemetry/battery
+  - Payload example:
+    ```json
+    {
+      "voltage": 3.92,
+      "soc": 82.5,
+      "battery_capacity_ah": 100,
+      "time": "2026-07-13 12:34:56"
+    }
+    ```
+
+- Topic: esp32/telemetry/solar
+  - Payload example:
+    ```json
+    {
+      "voltage": 18.4,
+      "current": 2.1,
+      "power": 38.6,
+      "energy_wh": 12.8,
+      "time": "2026-07-13 12:34:56"
+    }
+    ```
+
+- Topic: esp32/telemetry/estimator
+  - Payload example:
+    ```json
+    {
+      "battery_soc": 82.5,
+      "battery_voltage": 3.92,
+      "solar_current": 2.1,
+      "solar_power_w": 38.6,
+      "battery_power_w": 8.2,
+      "available_current": 10,
+      "available_power_w": 39.2,
+      "estimated_runtime_h": 1,
+      "energy_wh": 12.8,
+      "time": "2026-07-13 12:34:56"
+    }
+    ```
 
 #### Status topics
 
-- esp32/status/error
-- esp32/status/config/node_added
-- esp32/status/config/bulk_added
-- esp32/status/config/update_done
-- esp32/status/config/delete_done
-- esp32/status/config/tree_saved
-- esp32/status/config/tree
-- esp32/status/config/list
-- esp32/status/config/get_node
-- esp32/status/config/pin_status
-- esp32/status/control/execute_received
-- esp32/status/control/result
-- esp32/status/control/relay_changed
+- Topic: esp32/status/error
+  - Payload example:
+    ```json
+    {
+      "error": "Missing 'name'",
+      "request_topic": "esp32/command/config/delete"
+    }
+    ```
+
+- Topic: esp32/status/config/node_added
+  - Payload example:
+    ```text
+    Fridge
+    ```
+
+- Topic: esp32/status/config/bulk_added
+  - Payload example:
+    ```text
+    Added 2 loads, skipped 0 invalid entries
+    ```
+
+- Topic: esp32/status/config/update_done
+  - Payload example:
+    ```text
+    Fridge
+    ```
+
+- Topic: esp32/status/config/delete_done
+  - Payload example:
+    ```text
+    Fridge
+    ```
+
+- Topic: esp32/status/config/tree_saved
+  - Payload example:
+    ```text
+    OK
+    ```
+
+- Topic: esp32/status/config/tree
+  - Payload example:
+    ```json
+    {
+      "name": "Main_DB",
+      "children": []
+    }
+    ```
+
+- Topic: esp32/status/config/list
+  - Payload example:
+    ```json
+    [
+      {
+        "name": "Fridge",
+        "amps": 1.2,
+        "pin": 17,
+        "type": "auto"
+      }
+    ]
+    ```
+
+- Topic: esp32/status/config/get_node
+  - Payload example:
+    ```json
+    {
+      "name": "Fridge",
+      "amps": 1.2,
+      "pin": 17,
+      "type": "auto"
+    }
+    ```
+
+- Topic: esp32/status/config/pin_status
+  - Payload example:
+    ```json
+    {
+      "used": [17, 18],
+      "available": [2, 4, 5, 12, 13, 14, 15, 16, 19, 21, 22, 23, 25, 26, 27, 32, 33]
+    }
+    ```
+
+- Topic: esp32/status/control/execute_received
+  - Payload example:
+    ```text
+    Running optimisation...
+    ```
+
+- Topic: esp32/status/control/result
+  - Payload example:
+    ```json
+    {
+      "timestamp": "2026-07-13 12:34:56",
+      "available_current": 10,
+      "loads": [
+        {
+          "name": "Fridge",
+          "parent": "Main_DB",
+          "active": true,
+          "amps": 1.2,
+          "pin": 17
+        }
+      ]
+    }
+    ```
+
+- Topic: esp32/status/control/relay_changed
+  - Payload example:
+    ```json
+    {
+      "topic": "esp32/command/control/relay/Fridge",
+      "node": "Fridge",
+      "state": "on"
+    }
+    ```
 
 ## Optimisation logic
 
