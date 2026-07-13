@@ -21,7 +21,8 @@ void nodeToJson(Node* node, JsonObject obj) {
     obj["priority"] = node->priority;
     obj["pin"] = node->relayPin;
     obj["friction"] = node->wireFriction;
-    obj["type"] = node->typeString();
+    obj["forced"] = node->isForced;
+    obj["forced_state"] = MQTTResponse::forcedState(node);
     obj["active"] = node->isActive;
 
     JsonArray children = obj.createNestedArray("children");
@@ -41,11 +42,9 @@ bool loadChildren(BestFirstSearch& bfs, const char* parentName, JsonArray childr
         int priority = child["priority"] | 0;
         int pin = child.containsKey("pin") ? child["pin"].as<int>() : (child.containsKey("relayPin") ? child["relayPin"].as<int>() : -1);
         float friction = child.containsKey("friction") ? child["friction"].as<float>() : (child.containsKey("wireFriction") ? child["wireFriction"].as<float>() : 0.1f);
-        String type = child["type"] | "";
-        type.toLowerCase();
-        bool fixed = (type == "fixed") || (child["forced"] | false);
+        bool forced = child["forced"] | false;
 
-        Node* node = bfs.createAndAddNode(parentName, name, amps, priority, pin, friction, fixed, voltage);
+        Node* node = bfs.createAndAddNode(parentName, name, amps, priority, pin, friction, forced, voltage);
         if (!node) return false;
         node->power = child["power_w"] | node->power;
         node->energyWh = child["energy_wh"] | 0.0f;
@@ -124,7 +123,7 @@ bool load(BestFirstSearch& bfs) {
     if (root) {
         root->name = doc["name"] | "Main_DB";
         root->isActive = doc["active"] | true;
-        root->mode = LoadMode::Fixed;
+        root->isForced = doc["forced"] | true;
         root->energyWh = doc["energy_wh"] | 0.0f;
         root->lastActiveUpdateMs = millis();
     }

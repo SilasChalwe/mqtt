@@ -41,6 +41,25 @@ void BestFirstSearch::clear() {
     root->isActive = true;
 }
 
+void BestFirstSearch::clear() {
+    if (!root) return;
+    for (Node* child : root->children) {
+        recursiveDelete(child);
+    }
+    root->children.clear();
+    root->name = rootName;
+    root->currentDraw = 0.0f;
+    root->voltage = 0.0f;
+    root->power = 0.0f;
+    root->energyWh = 0.0f;
+    root->lastActiveUpdateMs = millis();
+    root->priority = 0;
+    root->relayPin = -1;
+    root->isForced = true;
+    root->wireFriction = 0.0f;
+    root->isActive = true;
+}
+
 Node* BestFirstSearch::findByName(Node* current, const String& name) {
     if (!current) return nullptr;
     if (current->name == name) return current;

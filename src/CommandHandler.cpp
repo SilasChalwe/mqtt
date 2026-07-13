@@ -153,16 +153,6 @@ static bool parseJsonDocument(const String& payload, DynamicJsonDocument& doc, c
     return true;
 }
 
-static bool parseFixedMode(JsonVariantConst value, bool fallbackFixed) {
-    if (value.is<const char*>()) {
-        String type = value.as<const char*>();
-        type.toLowerCase();
-        if (type == "fixed") return true;
-        if (type == "auto") return false;
-    }
-    return fallbackFixed;
-}
-
 static bool saveTreeAndPublishWarning(BestFirstSearch* bfs, MQTTManager* mqtt, const String& topic) {
     bool saved = bfs && TreeStorage::save(*bfs);
     if (!saved) {
@@ -244,7 +234,7 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
-        Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, fixed, voltage);
+        Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, forced, voltage);
         if (node) {
             RelayControl::begin(node->relayPin);
             saveTreeAndPublishWarning(bfs, mqtt, topic);
@@ -396,7 +386,7 @@ void processCommand(const String& topic, const String& payload,
         int priority = doc.containsKey("priority") ? doc["priority"].as<int>() : existing->priority;
         bool fixed = parseFixedMode(doc["type"], doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isFixed());
 
-        bool ok = bfs->updateNode(name, amps, priority, fixed, voltage);
+        bool ok = bfs->updateNode(name, amps, priority, forced, voltage);
         if (ok) {
             saveTreeAndPublishWarning(bfs, mqtt, topic);
         }
