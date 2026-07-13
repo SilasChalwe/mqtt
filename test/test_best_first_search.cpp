@@ -41,17 +41,17 @@ static void cumulative_current_limit_is_enforced() {
     assert(medium->isActive);
 }
 
-static void forced_loads_reduce_remaining_budget() {
+static void fixed_loads_reduce_remaining_budget() {
     BestFirstSearch bfs;
-    Node* forced = bfs.createAndAddNode("Main_DB", "forced", 4.0f, 1, 1, 0.0f, true, 10.0f);
+    Node* fixed = bfs.createAndAddNode("Main_DB", "fixed", 4.0f, 1, 1, 0.0f, true, 10.0f);
     Node* fitsRemaining = bfs.createAndAddNode("Main_DB", "fitsRemaining", 2.0f, 8, 2, 0.0f, false, 10.0f);
     Node* exceedsRemaining = bfs.createAndAddNode("Main_DB", "exceedsRemaining", 3.0f, 20, 3, 0.0f, false, 10.0f);
-    forced->isActive = true;
+    fixed->isActive = true;
 
-    std::vector<Node*> candidates{forced, fitsRemaining, exceedsRemaining};
+    std::vector<Node*> candidates{fixed, fitsRemaining, exceedsRemaining};
     bfs.execute(candidates, 6.0f, 60.0f);
 
-    assert(forced->isActive);
+    assert(fixed->isActive);
     assert(fitsRemaining->isActive);
     assert(!exceedsRemaining->isActive);
     assertWithinBudget(candidates, 6.0f, 60.0f);
@@ -74,7 +74,7 @@ static void two_constraint_selection_beats_power_only_greedy_trim() {
 
 int main() {
     cumulative_current_limit_is_enforced();
-    forced_loads_reduce_remaining_budget();
+    fixed_loads_reduce_remaining_budget();
     two_constraint_selection_beats_power_only_greedy_trim();
     std::cout << "BestFirstSearch current-limit tests passed\n";
     return 0;

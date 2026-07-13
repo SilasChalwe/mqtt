@@ -14,7 +14,6 @@ namespace MQTTResponse {
     String optimisationResult(float availableCurrent, JsonArray loads);
 
     void addNode(JsonObject obj, Node* node, const String& parentName = "");
-    const char* forcedState(Node* node);
 }
 
 #endif

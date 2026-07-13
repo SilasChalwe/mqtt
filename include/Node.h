@@ -4,6 +4,11 @@
 #include <Arduino.h>
 #include <vector>
 
+enum class LoadMode {
+    Auto,
+    Fixed
+};
+
 struct Node {
     int id = 0;
     String name;
@@ -16,7 +21,7 @@ struct Node {
 
     int priority = 0;
     int relayPin = -1;
-    bool isForced = false;
+    LoadMode mode = LoadMode::Auto;
     bool isActive = false;
     float wireFriction = 0.0f;
 
@@ -25,7 +30,8 @@ struct Node {
     bool isLoad() const;
     bool isBranch() const;
     void recalculatePower();
-    const char* forcedState() const;
+    bool isFixed() const;
+    const char* typeString() const;
     void accumulateEnergy(unsigned long nowMs);
 };
 

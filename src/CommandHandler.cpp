@@ -182,7 +182,7 @@ void processCommand(const String& topic, const String& payload,
         int priority         = doc["priority"] | 0;
         int pin              = doc["pin"] | -1;
         float friction       = doc["friction"] | 0.1f;
-        bool forced          = doc["forced"] | false;
+        bool fixed           = parseFixedMode(doc["type"], doc["forced"] | false);
 
         if (name == nullptr || String(name).length() == 0) {
             Serial.println("Missing 'name' in add");
@@ -286,7 +286,7 @@ void processCommand(const String& topic, const String& payload,
             int priority         = obj["priority"] | 0;
             int pin              = obj["pin"] | -1;
             float friction       = obj["friction"] | 0.1f;
-            bool forced          = obj["forced"] | false;
+            bool fixed           = parseFixedMode(obj["type"], obj["forced"] | false);
 
             if (name == nullptr || String(name).length() == 0) {
                 skipped++;
@@ -314,7 +314,7 @@ void processCommand(const String& topic, const String& payload,
                 continue;
             }
 
-            Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, forced, voltage);
+            Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, fixed, voltage);
             if (node) {
                 RelayControl::begin(node->relayPin);
                 count++;
@@ -384,7 +384,7 @@ void processCommand(const String& topic, const String& payload,
         float amps = doc.containsKey("amps") ? doc["amps"].as<float>() : existing->currentDraw;
         float voltage = doc.containsKey("voltage") ? doc["voltage"].as<float>() : existing->voltage;
         int priority = doc.containsKey("priority") ? doc["priority"].as<int>() : existing->priority;
-        bool forced = doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isForced;
+        bool fixed = parseFixedMode(doc["type"], doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isFixed());
 
         bool ok = bfs->updateNode(name, amps, priority, forced, voltage);
         if (ok) {
@@ -797,14 +797,14 @@ void processCommand(const String& topic, const String& payload,
 
         if (state == "on" || state == "1") {
             node->isActive = true;
-            node->isForced = true;
+            node->mode = LoadMode::Fixed;
             RelayControl::set(node->relayPin, true);
         } else if (state == "off" || state == "0") {
             node->isActive = false;
-            node->isForced = true;
+            node->mode = LoadMode::Fixed;
             RelayControl::set(node->relayPin, false);
         } else if (state == "auto") {
-            node->isForced = false;
+            node->mode = LoadMode::Auto;
         } else {
             publishError(mqtt, topic, "Invalid relay state (use 'on'/'off'/'auto')");
             xSemaphoreGive(bfsMutex);

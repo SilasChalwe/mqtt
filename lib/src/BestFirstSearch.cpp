@@ -17,7 +17,26 @@ BestFirstSearch::BestFirstSearch() {
     root->lastActiveUpdateMs = millis();
     root->priority = 0;
     root->relayPin = -1;
-    root->isForced = true;
+    root->mode = LoadMode::Fixed;
+    root->wireFriction = 0.0f;
+    root->isActive = true;
+}
+
+void BestFirstSearch::clear() {
+    if (!root) return;
+    for (Node* child : root->children) {
+        recursiveDelete(child);
+    }
+    root->children.clear();
+    root->name = rootName;
+    root->currentDraw = 0.0f;
+    root->voltage = 0.0f;
+    root->power = 0.0f;
+    root->energyWh = 0.0f;
+    root->lastActiveUpdateMs = millis();
+    root->priority = 0;
+    root->relayPin = -1;
+    root->mode = LoadMode::Fixed;
     root->wireFriction = 0.0f;
     root->isActive = true;
 }
@@ -52,7 +71,7 @@ Node* BestFirstSearch::findByName(Node* current, const String& name) {
     return nullptr;
 }
 
-Node* BestFirstSearch::createAndAddNode(const String& parentName, const String& name, float amps, int priority, int pin, float friction, bool forced, float voltage) {
+Node* BestFirstSearch::createAndAddNode(const String& parentName, const String& name, float amps, int priority, int pin, float friction, bool fixed, float voltage) {
     // If parent is not specified or the configured root name, start at root
     Node* parent = (parentName == rootName || parentName == "") ? root : findByName(root, parentName);
 
@@ -68,14 +87,14 @@ Node* BestFirstSearch::createAndAddNode(const String& parentName, const String& 
     newNode->priority = priority;
     newNode->relayPin = pin;
     newNode->wireFriction = friction;
-    newNode->isForced = forced;
+    newNode->mode = fixed ? LoadMode::Fixed : LoadMode::Auto;
     newNode->isActive = false;
 
     parent->children.push_back(newNode);
     return newNode;
 }
 
-bool BestFirstSearch::updateNode(const String& name, float newAmps, int newPriority, bool forced, float newVoltage) {
+bool BestFirstSearch::updateNode(const String& name, float newAmps, int newPriority, bool fixed, float newVoltage) {
     Node* target = findByName(root, name);
     if (target) {
         target->currentDraw = newAmps;
@@ -84,7 +103,7 @@ bool BestFirstSearch::updateNode(const String& name, float newAmps, int newPrior
         }
         target->recalculatePower();
         target->priority = newPriority;
-        target->isForced = forced;
+        target->mode = fixed ? LoadMode::Fixed : LoadMode::Auto;
         return true;
     }
     return false;
@@ -157,18 +176,18 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
     const int CURRENT_SCALE = 10;   // 1 DP current unit = 0.1 A
     const int POWER_SCALE = 10;     // 1 DP power unit = 10 W
 
-    float forcedCurrent = 0.0f;
-    float forcedPower = 0.0f;
+    float fixedCurrent = 0.0f;
+    float fixedPower = 0.0f;
     for (Node* n : candidates) {
         n->recalculatePower();
-        if (n->isForced && n->isActive) {
-            forcedCurrent += n->currentDraw;
-            forcedPower += n->power;
+        if (n->isFixed() && n->isActive) {
+            fixedCurrent += n->currentDraw;
+            fixedPower += n->power;
         }
     }
 
-    float remainingCurrent = safeCurrent - forcedCurrent;
-    float remainingPower = safePower - forcedPower;
+    float remainingCurrent = safeCurrent - fixedCurrent;
+    float remainingPower = safePower - fixedPower;
     if (remainingCurrent < 0.0f) remainingCurrent = 0.0f;
     if (remainingPower < 0.0f) remainingPower = 0.0f;
 
@@ -179,12 +198,12 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
 
     std::vector<bool> selected(N, false);
     for (int i = 0; i < N; i++) {
-        if (candidates[i]->isForced) selected[i] = candidates[i]->isActive;
+        if (candidates[i]->isFixed()) selected[i] = candidates[i]->isActive;
     }
 
     std::vector<int> nonForcedIndices;
     for (int i = 0; i < N; i++) {
-        if (!candidates[i]->isForced) nonForcedIndices.push_back(i);
+        if (!candidates[i]->isFixed()) nonForcedIndices.push_back(i);
     }
     int M = nonForcedIndices.size();
 
