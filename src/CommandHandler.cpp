@@ -49,6 +49,16 @@ static void publishError(MQTTManager* mqtt, const String& requestTopic, const ch
     publishError(mqtt, requestTopic, errorCodeForMessage(message), message);
 }
 
+static bool parseFixedMode(JsonVariantConst typeValue, bool fallbackFixed) {
+    if (typeValue.is<const char*>()) {
+        String type = typeValue.as<const char*>();
+        type.toLowerCase();
+        if (type == "fixed") return true;
+        if (type == "auto") return false;
+    }
+    return fallbackFixed;
+}
+
 // Task that dequeues commands and calls processCommand() in a single consumer
 static void commandProcessorTask(void* pvParameters) {
     CommandMessage* msg = nullptr;
@@ -234,7 +244,7 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
-        Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, forced, voltage);
+        Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, fixed, voltage);
         if (node) {
             RelayControl::begin(node->relayPin);
             saveTreeAndPublishWarning(bfs, mqtt, topic);
@@ -386,7 +396,7 @@ void processCommand(const String& topic, const String& payload,
         int priority = doc.containsKey("priority") ? doc["priority"].as<int>() : existing->priority;
         bool fixed = parseFixedMode(doc["type"], doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isFixed());
 
-        bool ok = bfs->updateNode(name, amps, priority, forced, voltage);
+        bool ok = bfs->updateNode(name, amps, priority, fixed, voltage);
         if (ok) {
             saveTreeAndPublishWarning(bfs, mqtt, topic);
         }
