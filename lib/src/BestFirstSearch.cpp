@@ -1,8 +1,8 @@
 #include "BestFirstSearch.h"
 
 #include <Arduino.h>      // required for millis
-#include <algorithm>      // required for std::max
-#include <cmath>          // required for ceil/floor in resource scaling
+#include <algorithm>      // required for std::max (retained for compatibility)
+#include <cmath>          // required for ceil/floor in resource scaling (no longer used)
 
 BestFirstSearch::BestFirstSearch() {
     // Root is the entry point (the very top circle in your image)
@@ -124,8 +124,15 @@ bool BestFirstSearch::removeNode(const String& nodeName) {
     return false;
 }
 
+/**
+ * Pure best-first search (greedy): collects all appliance nodes (leaf nodes with a relay)
+ * in descending order of heuristic value (priority - wireFriction).
+ * The priority queue expands the most promising node first – no path cost is used.
+ * This produces a candidate list ready for a greedy knapsack fill.
+ */
 std::vector<Node*> BestFirstSearch::scout(float availableCurrent) {
     std::vector<Node*> candidates;
+    // Heuristic evaluation: the higher (priority - friction), the better.
     auto compare = [](Node* a, Node* b) {
         return (a->priority - a->wireFriction) < (b->priority - b->wireFriction);
     };
@@ -145,6 +152,7 @@ std::vector<Node*> BestFirstSearch::scout(float availableCurrent) {
             if (child) pq.push(child);
         }
     }
+    // candidates is now ordered best-first (highest heuristic first)
     return candidates;
 }
 
@@ -152,107 +160,56 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
     int N = candidates.size();
     if (N == 0) return;
 
-    float safeCurrent = (C_available > 0.0f) ? C_available : 0.0f;
-    float safePower = (P_available > 0.0f) ? P_available : 0.0f;
-    const int CURRENT_SCALE = 10;   // 1 DP current unit = 0.1 A
-    const int POWER_SCALE = 10;     // 1 DP power unit = 10 W
-
-    float fixedCurrent = 0.0f;
-    float fixedPower = 0.0f;
+    // Ensure all power values are up to date
     for (Node* n : candidates) {
         n->recalculatePower();
-        if (n->isFixed() && n->isActive) {
-            fixedCurrent += n->currentDraw;
-            fixedPower += n->power;
-        }
     }
 
-    float remainingCurrent = safeCurrent - fixedCurrent;
-    float remainingPower = safePower - fixedPower;
-    if (remainingCurrent < 0.0f) remainingCurrent = 0.0f;
-    if (remainingPower < 0.0f) remainingPower = 0.0f;
-
-    int remainingC = (int)std::floor(remainingCurrent * CURRENT_SCALE + 0.0001f);
-    int remainingW = (int)std::floor(remainingPower / POWER_SCALE + 0.0001f);
-    if (remainingC < 0) remainingC = 0;
-    if (remainingW < 0) remainingW = 0;
-
+    // --- Fixed loads ---
+    float fixedCurrent = 0.0f;
+    float fixedPower = 0.0f;
     std::vector<bool> selected(N, false);
+
     for (int i = 0; i < N; i++) {
-        if (candidates[i]->isFixed()) selected[i] = candidates[i]->isActive;
-    }
-
-    std::vector<int> autoIndices;
-    for (int i = 0; i < N; i++) {
-        if (!candidates[i]->isFixed()) autoIndices.push_back(i);
-    }
-    int M = autoIndices.size();
-
-    const size_t cells = (size_t)(M + 1) * (size_t)(remainingC + 1) * (size_t)(remainingW + 1);
-    const size_t bytes = cells * sizeof(int);
-    const size_t MAX_DP_BYTES = 120 * 1024;
-    if (bytes > MAX_DP_BYTES) {
-#ifdef ARDUINO
-        Serial.printf("Optimisation skipped: DP table too large (%u bytes)\n", (unsigned)bytes);
-#endif
-        unsigned long nowMs = millis();
-        for (Node* n : candidates) {
-            if (n && n->relayPin != -1) n->accumulateEnergy(nowMs);
-        }
-        return;
-    }
-
-    auto index = [&](int i, int c, int w) {
-        return ((i * (remainingC + 1)) + c) * (remainingW + 1) + w;
-    };
-
-    std::vector<int> K((M + 1) * (remainingC + 1) * (remainingW + 1), 0);
-    for (int i = 1; i <= M; i++) {
-        Node* node = candidates[autoIndices[i - 1]];
-        int C_i = (int)std::ceil(node->currentDraw * CURRENT_SCALE - 0.0001f);
-        int P_i = (int)std::ceil(node->power / POWER_SCALE - 0.0001f);
-        if (C_i < 0) C_i = 0;
-        if (P_i < 0) P_i = 0;
-        int U_i = node->priority;
-
-        for (int c = 0; c <= remainingC; c++) {
-            for (int w = 0; w <= remainingW; w++) {
-                int skip = K[index(i - 1, c, w)];
-                int take = skip;
-                if (C_i <= c && P_i <= w && node->currentDraw <= remainingCurrent && node->power <= remainingPower) {
-                    take = U_i + K[index(i - 1, c - C_i, w - P_i)];
-                }
-                K[index(i, c, w)] = max(take, skip);
+        if (candidates[i]->isFixed()) {
+            selected[i] = candidates[i]->isActive;   // keep existing state
+            if (selected[i]) {
+                fixedCurrent += candidates[i]->currentDraw;
+                fixedPower   += candidates[i]->power;
             }
         }
     }
 
-    int c_limit = remainingC;
-    int w_limit = remainingW;
-    for (int i = M; i > 0; i--) {
-        Node* node = candidates[autoIndices[i - 1]];
-        int C_i = (int)std::ceil(node->currentDraw * CURRENT_SCALE - 0.0001f);
-        int P_i = (int)std::ceil(node->power / POWER_SCALE - 0.0001f);
-        if (C_i < 0) C_i = 0;
-        if (P_i < 0) P_i = 0;
+    // --- Remaining budget after fixed loads ---
+    float remainingCurrent = C_available - fixedCurrent;
+    float remainingPower   = P_available   - fixedPower;
+    if (remainingCurrent < 0.0f) remainingCurrent = 0.0f;
+    if (remainingPower   < 0.0f) remainingPower   = 0.0f;
 
-        if (C_i <= c_limit && P_i <= w_limit &&
-            K[index(i, c_limit, w_limit)] == node->priority + K[index(i - 1, c_limit - C_i, w_limit - P_i)]) {
-            selected[autoIndices[i - 1]] = true;
-            c_limit -= C_i;
-            w_limit -= P_i;
+    /**
+     * Pure best-first greedy knapsack selection:
+     * The candidates are already ordered by descending heuristic (priority - friction)
+     * because scout() performed a best-first traversal.
+     * We now greedily activate each automatic load if it fits within the remaining budget.
+     * This is a true greedy algorithm – no backtracking, no DP.
+     */
+    // TOLERANCE avoids floating-point comparison issues; renamed from EPS to avoid ESP32 macro conflict
+    const float TOLERANCE = 1e-6f;
+    for (int i = 0; i < N; i++) {
+        Node* node = candidates[i];
+        if (node->isFixed()) continue;   // already handled
+
+        if ((node->currentDraw <= remainingCurrent + TOLERANCE) &&
+            (node->power       <= remainingPower   + TOLERANCE)) {
+            selected[i] = true;
+            remainingCurrent -= node->currentDraw;
+            remainingPower   -= node->power;
         } else {
-            selected[autoIndices[i - 1]] = false;
+            selected[i] = false;
         }
     }
 
-    // The selector only needs the DP result above; no historical state
-    // chain is tracked in this implementation, so nothing else is applied here.
-
-    // Energy accounting must use the state that was active during the
-    // elapsed interval.  Accumulate before applying the newly selected state
-    // so transitions from ON->OFF do not drop the just-finished runtime and
-    // transitions from OFF->ON do not backfill energy for idle time.
+    // --- Energy accounting and state application ---
     unsigned long nowMs = millis();
     for (int i = 0; i < N; i++) {
         Node* n = candidates[i];

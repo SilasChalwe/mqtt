@@ -46,6 +46,31 @@ The code is written around the Arduino ESP32 environment and uses libraries such
 
 Before flashing the firmware, review and update the values in src/Config.cpp:
 
+### Friction in the best-first search
+
+Friction is not a physical distance measurement. It is a penalty you assign to a node to represent how "bad" that branch is electrically from the Main Distribution Board (the root) to that appliance.
+
+- The tree starts at Main_DB.
+- Each child node is a sub-circuit, junction box, or appliance further down the wiring.
+- If a branch has a long cable run, thin wires, or shared conduits that cause voltage drop, you give that leaf appliance a positive friction value.
+- Friction is used only in the heuristic for that node and does not propagate upward.
+
+A practical example:
+
+- Living room lights: priority 10, friction 0
+- Garden shed lights: priority 10, friction 5
+
+Both have the same priority, but the shed lights get a lower effective score because the friction penalty reduces their desirability. In a tight budget, the living room lights are more likely to stay on first.
+
+Guidelines for choosing values:
+
+- Priority is an integer from 0 to 10 (or higher if you prefer).
+- Friction is a float and should usually be positive or zero.
+- Start with priority values from 0 to 10 and friction values from 0 to 3, then adjust based on real behaviour.
+- Keep friction smaller than the typical priority so it does not completely erase the benefit of a higher-priority load.
+
+The effective heuristic score is priority minus friction, so higher priority and lower friction make a load more likely to be selected.
+
 - Wi-Fi SSID and password.
 - MQTT host, port, and client ID.
 - Topic names.
