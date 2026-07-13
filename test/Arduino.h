@@ -58,6 +58,9 @@ Friction → Float (can have decimals), always positive or zero.
 5.0 (example) = adds a penalty of 5 to the “desirability” score.
 
 Usually choose a value smaller than the typical priority (e.g., 0 to 5) so it doesn’t completely cancel the priority.
+Since the effective score is priority - friction, you want the result to be a positive number for any appliance you might still want to use. If friction is larger than priority, that appliance becomes very low in the list and will almost never be turned on unless there's excess power.
+
+No negatives needed – friction is meant to subtract, so just use positive values. Start with priority from 0 to 10 and friction from 0 to 3, and adjust as you learn how your system behaves.
 
 
 */

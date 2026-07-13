@@ -23,12 +23,21 @@ bool isScheduleActive(const Node* node, int currentMinute) {
     return currentMinute >= node->scheduleStartMinute || currentMinute < node->scheduleEndMinute;
 }
 
-float scheduledEvaluation(Node* node, int currentMinute) {
-    float evaluation = node->currentDraw + (node->priority - node->wireFriction);
+float traversalCost(const Node* node) {
+    if (!node) return 0.0f;
+    float base = node->wireFriction + node->currentDraw * 0.01f;
+    float priorityPenalty = (100 - node->priority) * 0.01f;
+    return base + priorityPenalty;
+}
+
+float heuristicCost(const Node* node, int currentMinute) {
+    if (!node) return 0.0f;
+    float score = node->wireFriction + node->currentDraw * 0.02f;
     if (isScheduleActive(node, currentMinute)) {
-        evaluation += node->scheduleBoost;
+        score -= node->scheduleBoost * 0.005f;
     }
-    return evaluation;
+    score -= node->priority * 0.01f;
+    return score > 0.0f ? score : 0.0f;
 }
 }
 
@@ -190,30 +199,35 @@ std::vector<Node*> BestFirstSearch::scout(float availableCurrent) {
     (void)availableCurrent;
     const int currentMinute = TimeManager::getMinutesSinceMidnight();
 
-    // A* evaluation: f(n) = g(n) + h(n), where g(n) is currentDraw
-    // and h(n) is priority - wireFriction plus any active user schedule boost.
-    auto compare = [currentMinute](Node* a, Node* b) {
-        const float aEvaluation = scheduledEvaluation(a, currentMinute);
-        const float bEvaluation = scheduledEvaluation(b, currentMinute);
-        return aEvaluation < bEvaluation;
+    struct AStarNode {
+        Node* node;
+        float gCost;
+        float fCost;
     };
-    std::priority_queue<Node*, std::vector<Node*>, decltype(compare)> pq(compare);
 
-    pq.push(root);
-    while (!pq.empty()) {
-        Node* current = pq.top();
-        pq.pop();
-        
-        // Collect appliances (relayPin != -1)
-        if (current->relayPin != -1) {
-            candidates.push_back(current);
+    auto compare = [](const AStarNode& a, const AStarNode& b) {
+        return a.fCost > b.fCost;
+    };
+    std::priority_queue<AStarNode, std::vector<AStarNode>, decltype(compare)> openSet(compare);
+
+    openSet.push(AStarNode{root, 0.0f, heuristicCost(root, currentMinute)});
+    while (!openSet.empty()) {
+        AStarNode current = openSet.top();
+        openSet.pop();
+
+        if (current.node->relayPin != -1) {
+            candidates.push_back(current.node);
         }
-        
-        for (Node* child : current->children) {
-            if (child) pq.push(child);
+
+        for (Node* child : current.node->children) {
+            if (!child) continue;
+            float g = current.gCost + traversalCost(child);
+            float h = heuristicCost(child, currentMinute);
+            float f = g + h;
+            openSet.push(AStarNode{child, g, f});
         }
     }
-    // candidates is now ordered A* first (highest f(n) evaluation first)
+
     return candidates;
 }
 
@@ -253,22 +267,81 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
      * because scout() performed an A* traversal. We now activate each automatic
      * load in that order if it fits within the remaining budget.
      */
-    // TOLERANCE avoids floating-point comparison issues; renamed from EPS to avoid ESP32 macro conflict
-    const float TOLERANCE = 1e-6f;
-    for (int i = 0; i < N; i++) {
-        Node* node = candidates[i];
-        if (node->isFixed()) continue;   // already handled
+    // // TOLERANCE avoids floating-point comparison issues; renamed from EPS to avoid ESP32 macro conflict
+    // const float TOLERANCE = 1e-6f;
+    // for (int i = 0; i < N; i++) {
+    //     Node* node = candidates[i];
+    //     if (node->isFixed()) continue;   // already handled
 
-        if ((node->currentDraw <= remainingCurrent + TOLERANCE) &&
-            (node->power       <= remainingPower   + TOLERANCE)) {
-            selected[i] = true;
-            remainingCurrent -= node->currentDraw;
-            remainingPower   -= node->power;
-        } else {
-            selected[i] = false;
+    //     if ((node->currentDraw <= remainingCurrent + TOLERANCE) &&
+    //         (node->power       <= remainingPower   + TOLERANCE)) {
+    //         selected[i] = true;
+    //         remainingCurrent -= node->currentDraw;
+    //         remainingPower   -= node->power;
+    //     } else {
+    //         selected[i] = false;
+    //     }
+    // }
+ // ---------- 0/1 Knapsack Selection ----------
+        const int SCALE = 100;                         // 0.01 A resolution
+        int capacity = (int)(remainingCurrent * SCALE + 0.5f);
+
+        std::vector<float> dp(capacity + 1, -1.0f);
+        std::vector<std::vector<bool>> keep(N, std::vector<bool>(capacity + 1, false));
+
+        dp[0] = 0.0f;
+
+        for (int i = 0; i < N; i++) {
+
+            Node* node = candidates[i];
+
+            if (node->isFixed())
+                continue;
+
+            int weight = (int)(node->currentDraw * SCALE + 0.5f);
+            float value = (float)node->priority;
+
+            for (int w = capacity; w >= weight; w--) {
+
+                if (dp[w - weight] < 0.0f)
+                    continue;
+
+                if (node->power > remainingPower)
+                    continue;
+
+                if (dp[w] < dp[w - weight] + value) {
+
+                    dp[w] = dp[w - weight] + value;
+                    keep[i][w] = true;
+                }
+            }
         }
-    }
 
+        int w = capacity;
+
+        for (int i = N - 1; i >= 0; i--) {
+
+            if (candidates[i]->isFixed())
+                continue;
+
+            int weight = (int)(candidates[i]->currentDraw * SCALE + 0.5f);
+
+            if (w >= weight && keep[i][w]) {
+
+                selected[i] = true;
+                remainingCurrent -= candidates[i]->currentDraw;
+                remainingPower   -= candidates[i]->power;
+                w -= weight;
+            }
+            else {
+
+                selected[i] = false;
+            }
+        }
+   
+   
+   
+   
     // --- Energy accounting and state application ---
     unsigned long nowMs = millis();
     const int currentMinute = TimeManager::getMinutesSinceMidnight();

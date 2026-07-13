@@ -16,6 +16,24 @@
 #include <ArduinoJson.h>
 #include <cmath>
 
+// Shared physical INA219 sensor used by battery and solar managers.
+Adafruit_INA219 ina219;
+
+WiFiManager wifi;
+MQTTManager mqtt;
+BestFirstSearch bfs;
+BatteryManager battery(ina219, BATTERY_VOLTAGE_MIN, BATTERY_VOLTAGE_MAX, BATTERY_CAPACITY_AH);
+SolarManager solar(ina219, SOLAR_VOLTAGE_ADC_PIN, SOLAR_VOLTAGE_DIVIDER_RATIO);
+PowerEstimator estimator(0.2f);
+
+// FreeRTOS task handles
+TaskHandle_t tempTaskHandle = NULL;
+TaskHandle_t powerTaskHandle = NULL;
+TaskHandle_t optimiseTaskHandle = NULL;
+
+// Synchronisation primitive used to protect BFS tree and node operations
+SemaphoreHandle_t bfsMutex = NULL;
+
 static float sanitizeReading(float value) {
     return (isnan(value) || isinf(value)) ? 0.0f : value;
 }
@@ -72,25 +90,6 @@ static void addScheduleFeasibility(JsonObject obj, Node* node, int currentMinute
     schedule["remaining_runtime_minutes"] = result.remainingRuntimeMinutes;
     schedule["planner_action"] = SchedulePlanner::actionFor(result, node->scheduleMode);
 }
-
-// Shared physical INA219 sensor used by battery and solar managers.
-Adafruit_INA219 ina219;
-
-
-WiFiManager wifi;
-MQTTManager mqtt;
-BestFirstSearch bfs;
-BatteryManager battery(ina219, BATTERY_VOLTAGE_MIN, BATTERY_VOLTAGE_MAX, BATTERY_CAPACITY_AH);
-SolarManager solar(ina219, SOLAR_VOLTAGE_ADC_PIN, SOLAR_VOLTAGE_DIVIDER_RATIO);
-PowerEstimator estimator(0.2f);
-
-// FreeRTOS task handles
-TaskHandle_t tempTaskHandle = NULL;
-TaskHandle_t powerTaskHandle = NULL;
-TaskHandle_t optimiseTaskHandle = NULL;
-
-// Synchronisation primitive used to protect BFS tree and node operations
-SemaphoreHandle_t bfsMutex = NULL;
 
 // ------------------------------------------------------------
 // Helper: run the optimisation and publish the result
