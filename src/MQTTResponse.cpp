@@ -16,10 +16,6 @@ void addEnvelope(DynamicJsonDocument& doc, bool ok, const char* type, const char
 
 namespace MQTTResponse {
 
-const char* forcedState(Node* node) {
-    return node ? node->forcedState() : "not_forced";
-}
-
 void addNode(JsonObject obj, Node* node, const String& parentName) {
     if (!node) return;
     obj["name"] = node->name;
@@ -33,8 +29,7 @@ void addNode(JsonObject obj, Node* node, const String& parentName) {
     obj["priority"] = node->priority;
     obj["pin"] = node->relayPin;
     obj["friction"] = node->wireFriction;
-    obj["forced"] = node->isForced;
-    obj["forced_state"] = forcedState(node);
+    obj["type"] = node->typeString();
     obj["active"] = node->isActive;
 }
 

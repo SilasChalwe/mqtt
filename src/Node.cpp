@@ -12,9 +12,12 @@ void Node::recalculatePower() {
     power = currentDraw * voltage;
 }
 
-const char* Node::forcedState() const {
-    if (!isForced) return "not_forced";
-    return isActive ? "forced_on" : "forced_off";
+bool Node::isFixed() const {
+    return mode == LoadMode::Fixed;
+}
+
+const char* Node::typeString() const {
+    return isFixed() ? "fixed" : "auto";
 }
 
 void Node::accumulateEnergy(unsigned long nowMs) {

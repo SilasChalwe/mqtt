@@ -7,7 +7,7 @@
 #include "../include/TimeManager.h"
 #include "../include/MQTTResponse.h"
 #include "../include/MQTTTopics.h"
-#include <LittleFS.h>
+#include "../include/TreeStorage.h"
 #include <functional>
 #include <freertos/queue.h>
 #include <vector>
@@ -153,20 +153,22 @@ static bool parseJsonDocument(const String& payload, DynamicJsonDocument& doc, c
     return true;
 }
 
-// Helper to format tree node recursively (used by save_tree)
-void formatNode(Node* node, String& output, int indent = 0) {
-    if (!node) return;
-    for (int i = 0; i < indent; i++) output += "  ";
-    output += node->name;
-    output += " (amps=" + String(node->currentDraw, 1) +
-              ", pri=" + String(node->priority) +
-              ", pin=" + String(node->relayPin) +
-              ", friction=" + String(node->wireFriction, 2) +
-              ", forced=" + String(node->isForced ? "true" : "false") +
-              ", active=" + String(node->isActive ? "true" : "false") + ")\n";
-    for (Node* child : node->children) {
-        formatNode(child, output, indent + 1);
+static bool parseFixedMode(JsonVariantConst value, bool fallbackFixed) {
+    if (value.is<const char*>()) {
+        String type = value.as<const char*>();
+        type.toLowerCase();
+        if (type == "fixed") return true;
+        if (type == "auto") return false;
     }
+    return fallbackFixed;
+}
+
+static bool saveTreeAndPublishWarning(BestFirstSearch* bfs, MQTTManager* mqtt, const String& topic) {
+    bool saved = bfs && TreeStorage::save(*bfs);
+    if (!saved) {
+        publishError(mqtt, topic, "tree_save_failed", "Tree updated in memory but failed to save /tree.txt");
+    }
+    return saved;
 }
 
 void processCommand(const String& topic, const String& payload,
@@ -190,7 +192,7 @@ void processCommand(const String& topic, const String& payload,
         int priority         = doc["priority"] | 0;
         int pin              = doc["pin"] | -1;
         float friction       = doc["friction"] | 0.1f;
-        bool forced          = doc["forced"] | false;
+        bool fixed           = parseFixedMode(doc["type"], doc["forced"] | false);
 
         if (name == nullptr || String(name).length() == 0) {
             Serial.println("Missing 'name' in add");
@@ -242,8 +244,11 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
-        Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, forced, voltage);
-        if (node) RelayControl::begin(node->relayPin);
+        Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, fixed, voltage);
+        if (node) {
+            RelayControl::begin(node->relayPin);
+            saveTreeAndPublishWarning(bfs, mqtt, topic);
+        }
         Serial.println(node ? "Node added" : "Add failed");
         mqtt->publish(MQTTTopics::ConfigNodeAdded, node ? name : "failed");
 
@@ -291,7 +296,7 @@ void processCommand(const String& topic, const String& payload,
             int priority         = obj["priority"] | 0;
             int pin              = obj["pin"] | -1;
             float friction       = obj["friction"] | 0.1f;
-            bool forced          = obj["forced"] | false;
+            bool fixed           = parseFixedMode(obj["type"], obj["forced"] | false);
 
             if (name == nullptr || String(name).length() == 0) {
                 skipped++;
@@ -319,7 +324,7 @@ void processCommand(const String& topic, const String& payload,
                 continue;
             }
 
-            Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, forced, voltage);
+            Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, fixed, voltage);
             if (node) {
                 RelayControl::begin(node->relayPin);
                 count++;
@@ -328,6 +333,10 @@ void processCommand(const String& topic, const String& payload,
                 skipped++;
                 Serial.printf("Failed to add node '%s' under parent '%s'\n", name, parentName.c_str());
             }
+        }
+
+        if (count > 0) {
+            saveTreeAndPublishWarning(bfs, mqtt, topic);
         }
 
         char msg[64];
@@ -385,9 +394,12 @@ void processCommand(const String& topic, const String& payload,
         float amps = doc.containsKey("amps") ? doc["amps"].as<float>() : existing->currentDraw;
         float voltage = doc.containsKey("voltage") ? doc["voltage"].as<float>() : existing->voltage;
         int priority = doc.containsKey("priority") ? doc["priority"].as<int>() : existing->priority;
-        bool forced = doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isForced;
+        bool fixed = parseFixedMode(doc["type"], doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isFixed());
 
-        bool ok = bfs->updateNode(name, amps, priority, forced, voltage);
+        bool ok = bfs->updateNode(name, amps, priority, fixed, voltage);
+        if (ok) {
+            saveTreeAndPublishWarning(bfs, mqtt, topic);
+        }
         Serial.println(ok ? "Update OK" : "Update failed");
         mqtt->publish(MQTTTopics::ConfigUpdateDone, ok ? name : "failed");
 
@@ -439,6 +451,9 @@ void processCommand(const String& topic, const String& payload,
         }
 
         bool removed = bfs->removeNode(name);
+        if (removed) {
+            saveTreeAndPublishWarning(bfs, mqtt, topic);
+        }
         mqtt->publish(MQTTTopics::ConfigDeleteDone, removed ? name : "failed");
 
         xSemaphoreGive(bfsMutex);
@@ -637,6 +652,7 @@ void processCommand(const String& topic, const String& payload,
         float availablePower = available * 230.0f;
         bfs->execute(candidates, available, availablePower);
         RelayControl::apply(candidates);
+        saveTreeAndPublishWarning(bfs, mqtt, topic);
 
         // Serial output
         Serial.println("========= OPTIMISATION RESULT =========");
@@ -686,23 +702,6 @@ void processCommand(const String& topic, const String& payload,
         serializeJson(resultDoc, resultJson);
         mqtt->publish(MQTTTopics::ControlResult, resultJson.c_str());
 
-        // Save to LittleFS
-        if (!LittleFS.begin(true)) {
-            Serial.println("LittleFS mount failed – can't save log");
-        } else {
-            File logFile = LittleFS.open("/results.log", FILE_APPEND);
-            if (logFile) {
-                String timeStr = TimeManager::isTimeValid()
-                                 ? TimeManager::getFormattedTime("%Y-%m-%d %H:%M:%S")
-                                 : "N/A";
-                logFile.printf("[%s] Available: %.1f A -> %s\n",
-                               timeStr.c_str(), available, onList.c_str());
-                logFile.close();
-                Serial.println("Result saved to /results.log");
-            } else {
-                Serial.println("Failed to open log file");
-            }
-        }
         xSemaphoreGive(bfsMutex);
     }
 
@@ -726,27 +725,13 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
-        if (!LittleFS.begin(true)) {
-            Serial.println("LittleFS mount failed");
-            publishError(mqtt, topic, "LittleFS mount failed");
-            xSemaphoreGive(bfsMutex);
-            return;
-        }
-
-        File treeFile = LittleFS.open("/tree.txt", FILE_WRITE);
-        if (!treeFile) {
-            Serial.println("Failed to create tree file");
+        if (!TreeStorage::save(*bfs)) {
             publishError(mqtt, topic, "Cannot write tree file");
             xSemaphoreGive(bfsMutex);
             return;
         }
 
-        String treeStr = "=== Load Tree ===\n";
-        formatNode(bfs->getRoot(), treeStr);
-        treeFile.print(treeStr);
-        treeFile.close();
-        Serial.println("Tree saved to /tree.txt");
-        Serial.println(treeStr);
+        Serial.println(TreeStorage::toJson(*bfs));
         mqtt->publish(MQTTTopics::ConfigTreeSaved, "OK");
 
         xSemaphoreGive(bfsMutex);
@@ -772,99 +757,7 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
-        DynamicJsonDocument doc(8192);
-        JsonObject rootObj = doc.to<JsonObject>();
-        rootObj["name"] = bfs->getRoot()->name;
-
-        std::function<JsonObject(Node*, JsonObject&)> nodeToJson = [&](Node* node, JsonObject& parentObj) -> JsonObject {
-            JsonObject obj = parentObj.createNestedObject(node->name);
-            obj["name"] = node->name;
-            obj["amps"] = node->currentDraw;
-            obj["voltage"] = node->voltage;
-            obj["power_w"] = node->power;
-            obj["energy_wh"] = node->energyWh;
-            obj["priority"] = node->priority;
-            obj["pin"] = node->relayPin;
-            obj["friction"] = node->wireFriction;
-            obj["forced"] = node->isForced;
-            obj["active"] = node->isActive;
-            JsonArray children = obj.createNestedArray("children");
-            for (Node* c : node->children) {
-                JsonObject childObj = children.createNestedObject();
-                childObj["name"] = c->name;
-                childObj["amps"] = c->currentDraw;
-                childObj["voltage"] = c->voltage;
-                childObj["power_w"] = c->power;
-                childObj["energy_wh"] = c->energyWh;
-                childObj["priority"] = c->priority;
-                childObj["pin"] = c->relayPin;
-                childObj["friction"] = c->wireFriction;
-                childObj["forced"] = c->isForced;
-                childObj["forced_state"] = MQTTResponse::forcedState(c);
-                childObj["active"] = c->isActive;
-                // Recursively add grandchildren
-                if (!c->children.empty()) {
-                    JsonArray gc = childObj.createNestedArray("children");
-                    std::function<void(Node*, JsonArray&)> addChildren = [&](Node* n, JsonArray& arr) {
-                        for (Node* g : n->children) {
-                            JsonObject go = arr.createNestedObject();
-                            go["name"] = g->name;
-                            go["amps"] = g->currentDraw;
-                            go["priority"] = g->priority;
-                            go["pin"] = g->relayPin;
-                            go["friction"] = g->wireFriction;
-                            go["forced"] = g->isForced;
-                            go["forced_state"] = MQTTResponse::forcedState(g);
-                            go["active"] = g->isActive;
-                            if (!g->children.empty()) {
-                                JsonArray sub = go.createNestedArray("children");
-                                addChildren(g, sub);
-                            }
-                        }
-                    };
-                    addChildren(c, gc);
-                }
-            }
-            return obj;
-        };
-
-        // Build children under root
-        JsonArray rootChildren = rootObj.createNestedArray("children");
-        for (Node* child : bfs->getRoot()->children) {
-            JsonObject childObj = rootChildren.createNestedObject();
-            childObj["name"] = child->name;
-            childObj["amps"] = child->currentDraw;
-            childObj["priority"] = child->priority;
-            childObj["pin"] = child->relayPin;
-            childObj["friction"] = child->wireFriction;
-            childObj["forced"] = child->isForced;
-            childObj["forced_state"] = MQTTResponse::forcedState(child);
-            childObj["active"] = child->isActive;
-            if (!child->children.empty()) {
-                JsonArray cArr = childObj.createNestedArray("children");
-                std::function<void(Node*, JsonArray&)> addChildren = [&](Node* n, JsonArray& arr) {
-                    for (Node* g : n->children) {
-                        JsonObject go = arr.createNestedObject();
-                        go["name"] = g->name;
-                        go["amps"] = g->currentDraw;
-                        go["priority"] = g->priority;
-                        go["pin"] = g->relayPin;
-                        go["friction"] = g->wireFriction;
-                        go["forced"] = g->isForced;
-                        go["forced_state"] = MQTTResponse::forcedState(g);
-                        go["active"] = g->isActive;
-                        if (!g->children.empty()) {
-                            JsonArray sub = go.createNestedArray("children");
-                            addChildren(g, sub);
-                        }
-                    }
-                };
-                addChildren(child, cArr);
-            }
-        }
-
-        String out;
-        serializeJson(rootObj, out);
+        String out = TreeStorage::toJson(*bfs);
         mqtt->publish(MQTTTopics::ConfigTree, out.c_str());
         Serial.println("=== Tree JSON ===");
         Serial.println(out);
@@ -914,19 +807,20 @@ void processCommand(const String& topic, const String& payload,
 
         if (state == "on" || state == "1") {
             node->isActive = true;
-            node->isForced = true;
+            node->mode = LoadMode::Fixed;
             RelayControl::set(node->relayPin, true);
         } else if (state == "off" || state == "0") {
             node->isActive = false;
-            node->isForced = true;
+            node->mode = LoadMode::Fixed;
             RelayControl::set(node->relayPin, false);
         } else if (state == "auto") {
-            node->isForced = false;
+            node->mode = LoadMode::Auto;
         } else {
             publishError(mqtt, topic, "Invalid relay state (use 'on'/'off'/'auto')");
             xSemaphoreGive(bfsMutex);
             return;
         }
+        saveTreeAndPublishWarning(bfs, mqtt, topic);
         String relayBody = MQTTResponse::relayChanged(topic.c_str(), node, state.c_str());
         mqtt->publish(MQTTTopics::ControlRelayChanged, relayBody.c_str());
 

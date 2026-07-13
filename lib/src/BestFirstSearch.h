@@ -19,15 +19,16 @@ public:
     BestFirstSearch();
     
     Node* getRoot() { return root; }
+    void clear();
 
     // [CREATE] Define new nodes and link them automatically to a parent
-    Node* createAndAddNode(const String& parentName, const String& name, float amps, int priority, int pin, float friction = 0.1, bool forced = false, float voltage = 230.0f);
+    Node* createAndAddNode(const String& parentName, const String& name, float amps, int priority, int pin, float friction = 0.1, bool fixed = false, float voltage = 230.0f);
     
     // [READ] Search for a node anywhere in the tree
     Node* getNode(const String& name) { return findByName(root, name); }
 
     // [UPDATE] Dynamically change node properties
-    bool updateNode(const String& name, float newAmps, int newPriority, bool forced = false, float newVoltage = -1.0f);
+    bool updateNode(const String& name, float newAmps, int newPriority, bool fixed = false, float newVoltage = -1.0f);
 
     // [DELETE] Remove a load or a whole branch and free memory
     bool removeNode(const String& nodeName);
