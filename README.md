@@ -116,9 +116,9 @@ The firmware subscribes to the wildcard topic esp32/# and handles the following 
 
 | Topic | Payload type | Required fields | Optional fields |
 | --- | --- | --- | --- |
-| esp32/command/config/add | JSON object | name, amps | parent, voltage, priority, pin, friction, type |
-| esp32/command/config/add_bulk | JSON array of objects | each object needs name and amps | parent, voltage, priority, pin, friction, type |
-| esp32/command/config/update | JSON object | name | amps, voltage, priority, type |
+| esp32/command/config/add | JSON object | name, amps | parent, voltage, priority, pin, friction, type, schedule_start, schedule_end, run_minutes, schedule_boost, schedule_mode, schedule_minimum_soc |
+| esp32/command/config/add_bulk | JSON array of objects | each object needs name and amps | parent, voltage, priority, pin, friction, type, schedule_start, schedule_end, run_minutes, schedule_boost, schedule_mode, schedule_minimum_soc |
+| esp32/command/config/update | JSON object | name | amps, voltage, priority, type, schedule_start, schedule_end, run_minutes, schedule_boost, schedule_mode, schedule_minimum_soc, schedule_clear |
 | esp32/command/config/delete | JSON object | name | none |
 | esp32/command/config/get_node | JSON object | name | none |
 | esp32/command/config/list | empty payload | none | none |
@@ -142,7 +142,12 @@ The firmware subscribes to the wildcard topic esp32/# and handles the following 
       "priority": 5,
       "pin": 17,
       "friction": 0.1,
-      "type": "auto"
+      "type": "auto",
+      "schedule_start": "19:00",
+      "schedule_end": "20:00",
+      "schedule_boost": 1000,
+      "schedule_mode": "required",
+      "schedule_minimum_soc": 40
     }
     ```
   - Field notes:
@@ -150,6 +155,14 @@ The firmware subscribes to the wildcard topic esp32/# and handles the following 
     - amps is the load current draw in amps.
     - pin is optional; use -1 if the node should not control a relay.
     - type accepts "auto", "fixed", true, or false.
+    - schedule_start/schedule_end are optional HH:MM user preference windows evaluated with TimeManager time.
+    - scheduled_time or time can be used instead of schedule_start for a one-hour default window, or with run_minutes to set the duration.
+    - schedule_boost controls how strongly the load is prioritised while its schedule window is active.
+    - schedule_mode accepts optional, preferred, or required and is included in schedule feasibility responses.
+    - schedule_minimum_soc rejects or marks schedules as low-battery when battery state of charge is below that reserve.
+    - run_minutes records the required runtime inside the schedule window; if omitted, the whole window is treated as required.
+    - Optimisation responses include schedule_feasibility.planner_action so the app can explain forced-on, deferred, completed, or low-battery decisions.
+    - Scheduled loads inside the estimator horizon also reserve current before their start time so the optimiser can save energy for later user preferences.
     - parent defaults to Main_DB if omitted.
 
 - Topic: esp32/command/config/add_bulk
@@ -165,7 +178,9 @@ The firmware subscribes to the wildcard topic esp32/# and handles the following 
         "priority": 5,
         "pin": 17,
         "friction": 0.1,
-        "type": "auto"
+        "type": "auto",
+        "schedule_start": "19:00",
+        "run_minutes": 30
       },
       {
         "parent": "Main_DB",
@@ -190,10 +205,13 @@ The firmware subscribes to the wildcard topic esp32/# and handles the following 
       "amps": 1.5,
       "voltage": 230,
       "priority": 7,
-      "type": "fixed"
+      "type": "fixed",
+      "schedule_start": "19:00",
+      "schedule_end": "20:00"
     }
     ```
   - The node identified by name must already exist.
+  - Send `"schedule_clear": true` or `"schedule_enabled": false` to remove a user preference window.
 
 - Topic: esp32/command/config/delete
   - Purpose: Delete a load node by name.

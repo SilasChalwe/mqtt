@@ -1,8 +1,36 @@
 #include "BestFirstSearch.h"
+#include "../../include/TimeManager.h"
 
 #include <Arduino.h>      // required for millis
 #include <algorithm>      // required for std::max (retained for compatibility)
 #include <cmath>          // required for ceil/floor in resource scaling (no longer used)
+
+namespace {
+bool isScheduleActive(const Node* node, int currentMinute) {
+    if (!node || !node->hasSchedule || currentMinute < 0 ||
+        node->scheduleStartMinute < 0 || node->scheduleEndMinute < 0) {
+        return false;
+    }
+
+    if (node->scheduleStartMinute == node->scheduleEndMinute) {
+        return currentMinute == node->scheduleStartMinute;
+    }
+
+    if (node->scheduleStartMinute < node->scheduleEndMinute) {
+        return currentMinute >= node->scheduleStartMinute && currentMinute < node->scheduleEndMinute;
+    }
+
+    return currentMinute >= node->scheduleStartMinute || currentMinute < node->scheduleEndMinute;
+}
+
+float scheduledEvaluation(Node* node, int currentMinute) {
+    float evaluation = node->currentDraw + (node->priority - node->wireFriction);
+    if (isScheduleActive(node, currentMinute)) {
+        evaluation += node->scheduleBoost;
+    }
+    return evaluation;
+}
+}
 
 BestFirstSearch::BestFirstSearch() {
     // Root is the entry point (the very top circle in your image)
@@ -19,6 +47,15 @@ BestFirstSearch::BestFirstSearch() {
     root->relayPin = -1;
     root->mode = LoadMode::Fixed;
     root->wireFriction = 0.0f;
+    root->hasSchedule = false;
+    root->scheduleStartMinute = -1;
+    root->scheduleEndMinute = -1;
+    root->scheduleBoost = 1000;
+    root->scheduleMode = 1;
+    root->scheduleMinimumSoc = 20.0f;
+    root->scheduleRequiredRuntimeMinutes = 0;
+    root->scheduleRuntimeTodayMinutes = 0;
+    root->scheduleLastRuntimeMinute = -1;
     root->isActive = true;
 }
 
@@ -38,6 +75,15 @@ void BestFirstSearch::clear() {
     root->relayPin = -1;
     root->mode = LoadMode::Fixed;
     root->wireFriction = 0.0f;
+    root->hasSchedule = false;
+    root->scheduleStartMinute = -1;
+    root->scheduleEndMinute = -1;
+    root->scheduleBoost = 1000;
+    root->scheduleMode = 1;
+    root->scheduleMinimumSoc = 20.0f;
+    root->scheduleRequiredRuntimeMinutes = 0;
+    root->scheduleRuntimeTodayMinutes = 0;
+    root->scheduleLastRuntimeMinute = -1;
     root->isActive = true;
 }
 
@@ -68,6 +114,15 @@ Node* BestFirstSearch::createAndAddNode(const String& parentName, const String& 
     newNode->priority = priority;
     newNode->relayPin = pin;
     newNode->wireFriction = friction;
+    newNode->hasSchedule = false;
+    newNode->scheduleStartMinute = -1;
+    newNode->scheduleEndMinute = -1;
+    newNode->scheduleBoost = 1000;
+    newNode->scheduleMode = 1;
+    newNode->scheduleMinimumSoc = 20.0f;
+    newNode->scheduleRequiredRuntimeMinutes = 0;
+    newNode->scheduleRuntimeTodayMinutes = 0;
+    newNode->scheduleLastRuntimeMinute = -1;
     newNode->mode = fixed ? LoadMode::Fixed : LoadMode::Auto;
     newNode->isActive = false;
 
@@ -125,16 +180,22 @@ bool BestFirstSearch::removeNode(const String& nodeName) {
 }
 
 /**
- * Pure best-first search (greedy): collects all appliance nodes (leaf nodes with a relay)
- * in descending order of heuristic value (priority - wireFriction).
- * The priority queue expands the most promising node first – no path cost is used.
- * This produces a candidate list ready for a greedy knapsack fill.
+ * A* search scout: collects all appliance nodes (leaf nodes with a relay)
+ * in descending order of evaluation value f(n) = g(n) + h(n).
+ * g(n) is the node current draw and h(n) is the existing heuristic
+ * priority - wireFriction.
  */
 std::vector<Node*> BestFirstSearch::scout(float availableCurrent) {
     std::vector<Node*> candidates;
-    // Heuristic evaluation: the higher (priority - friction), the better.
-    auto compare = [](Node* a, Node* b) {
-        return (a->priority - a->wireFriction) < (b->priority - b->wireFriction);
+    (void)availableCurrent;
+    const int currentMinute = TimeManager::getMinutesSinceMidnight();
+
+    // A* evaluation: f(n) = g(n) + h(n), where g(n) is currentDraw
+    // and h(n) is priority - wireFriction plus any active user schedule boost.
+    auto compare = [currentMinute](Node* a, Node* b) {
+        const float aEvaluation = scheduledEvaluation(a, currentMinute);
+        const float bEvaluation = scheduledEvaluation(b, currentMinute);
+        return aEvaluation < bEvaluation;
     };
     std::priority_queue<Node*, std::vector<Node*>, decltype(compare)> pq(compare);
 
@@ -152,7 +213,7 @@ std::vector<Node*> BestFirstSearch::scout(float availableCurrent) {
             if (child) pq.push(child);
         }
     }
-    // candidates is now ordered best-first (highest heuristic first)
+    // candidates is now ordered A* first (highest f(n) evaluation first)
     return candidates;
 }
 
@@ -187,11 +248,10 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
     if (remainingPower   < 0.0f) remainingPower   = 0.0f;
 
     /**
-     * Pure best-first greedy knapsack selection:
-     * The candidates are already ordered by descending heuristic (priority - friction)
-     * because scout() performed a best-first traversal.
-     * We now greedily activate each automatic load if it fits within the remaining budget.
-     * This is a true greedy algorithm – no backtracking, no DP.
+     * A* ranked knapsack selection:
+     * The candidates are already ordered by descending f(n) = g(n) + h(n)
+     * because scout() performed an A* traversal. We now activate each automatic
+     * load in that order if it fits within the remaining budget.
      */
     // TOLERANCE avoids floating-point comparison issues; renamed from EPS to avoid ESP32 macro conflict
     const float TOLERANCE = 1e-6f;
@@ -211,10 +271,23 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
 
     // --- Energy accounting and state application ---
     unsigned long nowMs = millis();
+    const int currentMinute = TimeManager::getMinutesSinceMidnight();
     for (int i = 0; i < N; i++) {
         Node* n = candidates[i];
         if (n->relayPin == -1) continue;
         n->accumulateEnergy(nowMs);
+        if (n->hasSchedule && currentMinute >= 0) {
+            if (n->scheduleLastRuntimeMinute > currentMinute) {
+                n->scheduleRuntimeTodayMinutes = 0;
+            }
+            if (selected[i] && isScheduleActive(n, currentMinute) && n->scheduleLastRuntimeMinute >= 0) {
+                int deltaMinutes = currentMinute - n->scheduleLastRuntimeMinute;
+                if (deltaMinutes > 0) {
+                    n->scheduleRuntimeTodayMinutes += deltaMinutes;
+                }
+            }
+            n->scheduleLastRuntimeMinute = currentMinute;
+        }
         n->isActive = selected[i];
     }
 }

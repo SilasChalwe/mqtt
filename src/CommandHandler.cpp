@@ -60,6 +60,143 @@ static bool parseFixedMode(JsonVariantConst typeValue, bool fallbackFixed) {
     return fallbackFixed;
 }
 
+static int parseScheduleMinute(const char* value) {
+    if (!value || value[0] == '\0') return -1;
+    int hour = -1;
+    int minute = 0;
+    if (sscanf(value, "%d:%d", &hour, &minute) < 1) return -1;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return -1;
+    return (hour * 60) + minute;
+}
+
+static int addScheduleDuration(int startMinute, int durationMinutes) {
+    if (startMinute < 0 || durationMinutes <= 0) return -1;
+    return (startMinute + durationMinutes) % (24 * 60);
+}
+
+static int parseScheduleMode(JsonVariantConst modeValue, int fallback) {
+    if (!modeValue.isNull() && modeValue.is<const char*>()) {
+        String mode = modeValue.as<const char*>();
+        mode.toLowerCase();
+        if (mode == "required") return 2;
+        if (mode == "preferred") return 1;
+        if (mode == "optional") return 0;
+    }
+    if (!modeValue.isNull() && modeValue.is<int>()) {
+        int mode = modeValue.as<int>();
+        if (mode < 0) return 0;
+        if (mode > 2) return 2;
+        return mode;
+    }
+    return fallback;
+}
+
+static bool validateScheduleJson(JsonVariantConst source, String& error) {
+    if (source.isNull()) return true;
+    bool hasScheduleField = source.containsKey("schedule_start") || source.containsKey("start_time") ||
+                            source.containsKey("scheduled_time") || source.containsKey("time") ||
+                            source.containsKey("schedule_end") || source.containsKey("end_time");
+    if (!hasScheduleField) return true;
+
+    const char* startText = nullptr;
+    if (source.containsKey("schedule_start")) startText = source["schedule_start"];
+    else if (source.containsKey("start_time")) startText = source["start_time"];
+    else if (source.containsKey("scheduled_time")) startText = source["scheduled_time"];
+    else if (source.containsKey("time")) startText = source["time"];
+
+    if (parseScheduleMinute(startText) < 0) {
+        error = "Invalid schedule_start/time; expected HH or HH:MM from 00:00 to 23:59";
+        return false;
+    }
+
+    const char* endText = nullptr;
+    if (source.containsKey("schedule_end")) endText = source["schedule_end"];
+    else if (source.containsKey("end_time")) endText = source["end_time"];
+    if (endText && parseScheduleMinute(endText) < 0) {
+        error = "Invalid schedule_end; expected HH or HH:MM from 00:00 to 23:59";
+        return false;
+    }
+
+    if (!endText && source.containsKey("run_minutes") && source["run_minutes"].as<int>() <= 0) {
+        error = "run_minutes must be greater than zero";
+        return false;
+    }
+
+    if (source.containsKey("schedule_minimum_soc")) {
+        float minimumSoc = source["schedule_minimum_soc"].as<float>();
+        if (minimumSoc < 0.0f || minimumSoc > 100.0f) {
+            error = "schedule_minimum_soc must be between 0 and 100";
+            return false;
+        }
+    }
+    return true;
+}
+
+static void applyScheduleFromJson(Node* node, JsonVariantConst source) {
+    if (!node || source.isNull()) return;
+
+    if ((source.containsKey("schedule_clear") && source["schedule_clear"].as<bool>()) ||
+        (source.containsKey("schedule_enabled") && !source["schedule_enabled"].as<bool>())) {
+        node->hasSchedule = false;
+        node->scheduleStartMinute = -1;
+        node->scheduleEndMinute = -1;
+        node->scheduleBoost = 1000;
+        node->scheduleMode = 1;
+        node->scheduleMinimumSoc = 20.0f;
+        node->scheduleRequiredRuntimeMinutes = 0;
+        node->scheduleRuntimeTodayMinutes = 0;
+        node->scheduleLastRuntimeMinute = -1;
+        return;
+    }
+
+    const char* startText = nullptr;
+    if (source.containsKey("schedule_start")) {
+        startText = source["schedule_start"];
+    } else if (source.containsKey("start_time")) {
+        startText = source["start_time"];
+    } else if (source.containsKey("scheduled_time")) {
+        startText = source["scheduled_time"];
+    } else if (source.containsKey("time")) {
+        startText = source["time"];
+    }
+
+    int startMinute = parseScheduleMinute(startText);
+    if (startMinute < 0) {
+        return;
+    }
+
+    const char* endText = nullptr;
+    if (source.containsKey("schedule_end")) {
+        endText = source["schedule_end"];
+    } else if (source.containsKey("end_time")) {
+        endText = source["end_time"];
+    }
+
+    int endMinute = parseScheduleMinute(endText);
+    if (endMinute < 0) {
+        int durationMinutes = source.containsKey("run_minutes") ? source["run_minutes"].as<int>() : 60;
+        endMinute = addScheduleDuration(startMinute, durationMinutes);
+    }
+
+    if (endMinute < 0) return;
+
+    node->hasSchedule = true;
+    node->scheduleStartMinute = startMinute;
+    node->scheduleEndMinute = endMinute;
+    if (source.containsKey("schedule_boost")) {
+        node->scheduleBoost = source["schedule_boost"].as<int>();
+    }
+    node->scheduleMode = parseScheduleMode(source["schedule_mode"], node->scheduleMode);
+    if (source.containsKey("schedule_minimum_soc")) {
+        node->scheduleMinimumSoc = source["schedule_minimum_soc"].as<float>();
+    }
+    if (source.containsKey("run_minutes")) {
+        node->scheduleRequiredRuntimeMinutes = source["run_minutes"].as<int>();
+        node->scheduleRuntimeTodayMinutes = 0;
+        node->scheduleLastRuntimeMinute = -1;
+    }
+}
+
 // Task that dequeues commands and calls processCommand() in a single consumer
 static void commandProcessorTask(void* pvParameters) {
     CommandMessage* msg = nullptr;
@@ -178,7 +315,7 @@ void processCommand(const String& topic, const String& payload,
 
     // ---- Add a single load ----
     if (topic == "esp32/command/config/add") {
-        StaticJsonDocument<256> doc;
+        StaticJsonDocument<512> doc;
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             Serial.println("JSON parse error in add");
@@ -245,8 +382,17 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
+        String scheduleError;
+        if (!validateScheduleJson(doc.as<JsonVariantConst>(), scheduleError)) {
+            xSemaphoreGive(bfsMutex);
+            publishError(mqtt, topic, "invalid_schedule", scheduleError.c_str());
+            Serial.println(scheduleError);
+            return;
+        }
+
         Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, fixed, voltage);
         if (node) {
+            applyScheduleFromJson(node, doc.as<JsonVariantConst>());
             RelayControl::begin(node->relayPin);
             saveTreeAndPublishWarning(bfs, mqtt, topic);
         }
@@ -325,8 +471,16 @@ void processCommand(const String& topic, const String& payload,
                 continue;
             }
 
+            String scheduleError;
+            if (!validateScheduleJson(obj, scheduleError)) {
+                skipped++;
+                Serial.printf("Bulk add skipped: %s\n", scheduleError.c_str());
+                continue;
+            }
+
             Node* node = bfs->createAndAddNode(parentName.c_str(), name, amps, priority, pin, friction, fixed, voltage);
             if (node) {
+                applyScheduleFromJson(node, obj);
                 RelayControl::begin(node->relayPin);
                 count++;
                 Serial.println("Node added");
@@ -367,7 +521,7 @@ void processCommand(const String& topic, const String& payload,
             return;
         }
 
-        StaticJsonDocument<256> doc;
+        StaticJsonDocument<512> doc;
         DeserializationError err = deserializeJson(doc, payload);
         if (err) {
             Serial.println("JSON parse error in update");
@@ -397,8 +551,17 @@ void processCommand(const String& topic, const String& payload,
         int priority = doc.containsKey("priority") ? doc["priority"].as<int>() : existing->priority;
         bool fixed = parseFixedMode(doc["type"], existing->isFixed());
 
+        String scheduleError;
+        if (!validateScheduleJson(doc.as<JsonVariantConst>(), scheduleError)) {
+            publishError(mqtt, topic, "invalid_schedule", scheduleError.c_str());
+            Serial.println(scheduleError);
+            xSemaphoreGive(bfsMutex);
+            return;
+        }
+
         bool ok = bfs->updateNode(name, amps, priority, fixed, voltage);
         if (ok) {
+            applyScheduleFromJson(existing, doc.as<JsonVariantConst>());
             saveTreeAndPublishWarning(bfs, mqtt, topic);
         }
         Serial.println(ok ? "Update OK" : "Update failed");

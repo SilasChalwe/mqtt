@@ -14,6 +14,9 @@ public:
     // Returns the current local time as a formatted string
     // format examples: "%Y-%m-%d %H:%M:%S" or "%H:%M:%S"
     static String getFormattedTime(const char* format = "%Y-%m-%d %H:%M:%S");
+
+    // Returns minutes since midnight using the synchronised TimeManager clock, or -1 if unavailable.
+    static int getMinutesSinceMidnight();
 };
 
 #endif

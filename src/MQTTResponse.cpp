@@ -29,6 +29,14 @@ void addNode(JsonObject obj, Node* node, const String& parentName) {
     obj["priority"] = node->priority;
     obj["pin"] = node->relayPin;
     obj["friction"] = node->wireFriction;
+    obj["schedule_enabled"] = node->hasSchedule;
+    obj["schedule_start_minute"] = node->scheduleStartMinute;
+    obj["schedule_end_minute"] = node->scheduleEndMinute;
+    obj["schedule_boost"] = node->scheduleBoost;
+    obj["schedule_mode"] = node->scheduleMode;
+    obj["schedule_minimum_soc"] = node->scheduleMinimumSoc;
+    obj["schedule_required_runtime_minutes"] = node->scheduleRequiredRuntimeMinutes;
+    obj["schedule_runtime_today_minutes"] = node->scheduleRuntimeTodayMinutes;
     obj["type"] = node->typeString();
     obj["active"] = node->isActive;
 }
