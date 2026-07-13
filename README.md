@@ -193,7 +193,7 @@ The repository includes basic tests under the test/ folder for the search logic 
 
 This repository is licensed under the MIT License.
 
-Copyright (c) 2026
+Copyright (c) 2026 Silas Chalwe, CEO and Founder of Covian Hive
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
