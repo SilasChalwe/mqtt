@@ -191,4 +191,4 @@ The repository includes basic tests under the test/ folder for the search logic 
 
 ## License
 
-This repository does not currently declare a license file. If you plan to redistribute or reuse it commercially, add an explicit license before publication.
+This repository is private and proprietary. All code, design, and associated materials are the intellectual property of the owner and may not be copied, distributed, modified, or used outside the authorized scope without explicit written permission.
