@@ -10,12 +10,67 @@
 #include "include/CommandHandler.h"
 #include "include/TimeManager.h"
 #include "include/TreeStorage.h"
+#include "include/ScheduleFeasibility.h"
+#include "include/SchedulePlanner.h"
 #include "lib/src/BestFirstSearch.h"
 #include <ArduinoJson.h>
 #include <cmath>
 
 static float sanitizeReading(float value) {
     return (isnan(value) || isinf(value)) ? 0.0f : value;
+}
+
+static float collectScheduledReserveCurrent(Node* node, int currentMinute, int horizonMinutes) {
+    if (!node) return 0.0f;
+    float reserve = 0.0f;
+    if (node->relayPin != -1 && node->hasSchedule) {
+        int minutesUntilStart = ScheduleFeasibility::minutesUntilStart(node, currentMinute);
+        if (minutesUntilStart > 0 && minutesUntilStart <= horizonMinutes) {
+            reserve += node->currentDraw;
+        }
+    }
+    for (Node* child : node->children) {
+        reserve += collectScheduledReserveCurrent(child, currentMinute, horizonMinutes);
+    }
+    return reserve;
+}
+
+static float getScheduledReserveCurrent() {
+    int currentMinute = TimeManager::getMinutesSinceMidnight();
+    if (currentMinute < 0 || !bfs.getRoot()) return 0.0f;
+    int horizonMinutes = static_cast<int>(ESTIMATOR_RUNTIME_HOURS * 60.0f);
+    if (horizonMinutes <= 0) horizonMinutes = 60;
+    return collectScheduledReserveCurrent(bfs.getRoot(), currentMinute, horizonMinutes);
+}
+
+static void addScheduleFeasibility(JsonObject obj, Node* node, int currentMinute) {
+    ScheduleFeasibilityResult result = ScheduleFeasibility::evaluate(node,
+                                                                     currentMinute,
+                                                                     estimator.get_BatterySoC() * 100.0f,
+                                                                     battery.voltage(),
+                                                                     BATTERY_CAPACITY_AH,
+                                                                     solar.getCurrent(),
+                                                                     solar.getPower(),
+                                                                     20.0f);
+    if (!result.hasSchedule) return;
+
+    JsonObject schedule = obj.createNestedObject("schedule_feasibility");
+    schedule["status"] = result.scheduleStatus;
+    schedule["mode"] = ScheduleFeasibility::modeString(node->scheduleMode);
+    schedule["can_run"] = result.canRun;
+    schedule["failure_reason"] = result.failureReason;
+    schedule["starts_in_minutes"] = result.startsInMinutes;
+    schedule["duration_hours"] = result.scheduleDurationHours;
+    schedule["required_current"] = result.requiredCurrent;
+    schedule["required_power_w"] = result.requiredPowerW;
+    schedule["required_energy_wh"] = result.requiredEnergyWh;
+    schedule["available_battery_wh"] = result.availableBatteryWh;
+    schedule["predicted_solar_wh"] = result.predictedSolarWh;
+    schedule["reserved_energy_wh"] = result.reservedEnergyWh;
+    schedule["minimum_soc"] = result.minimumSoc;
+    schedule["required_runtime_minutes"] = result.requiredRuntimeMinutes;
+    schedule["remaining_runtime_minutes"] = result.remainingRuntimeMinutes;
+    schedule["planner_action"] = SchedulePlanner::actionFor(result, node->scheduleMode);
 }
 
 // Shared physical INA219 sensor used by battery and solar managers.
@@ -59,7 +114,22 @@ void runOptimisation(float availableCurrent) {
     }
 
     if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+        float scheduledReserveCurrent = getScheduledReserveCurrent();
+        float estimatorCurrent = estimator.getAvailableCurrent(BATTERY_CAPACITY_AH,
+                                                               ESTIMATOR_RUNTIME_HOURS,
+                                                               ESTIMATOR_FORCED_LOADS + scheduledReserveCurrent);
+        if (estimatorCurrent < availableCurrent) {
+            availableCurrent = estimatorCurrent;
+        }
         auto candidates = bfs.scout(availableCurrent);
+        candidates = SchedulePlanner::planCandidates(candidates,
+                                                     TimeManager::getMinutesSinceMidnight(),
+                                                     estimator.get_BatterySoC() * 100.0f,
+                                                     battery.voltage(),
+                                                     BATTERY_CAPACITY_AH,
+                                                     solar.getCurrent(),
+                                                     solar.getPower(),
+                                                     20.0f);
         float availablePower = availableCurrent * battery.voltage();
         bfs.execute(candidates, availableCurrent, availablePower);
         RelayControl::apply(candidates);
@@ -72,6 +142,7 @@ void runOptimisation(float availableCurrent) {
                          : "N/A";
         resultDoc["timestamp"] = timeStr;
         resultDoc["available_current"] = availableCurrent;
+        resultDoc["scheduled_reserve_current"] = sanitizeReading(scheduledReserveCurrent);
         JsonArray loads = resultDoc.createNestedArray("loads");
 
         std::function<void(Node*, const String&)> collectLoads = [&](Node* node, const String& parentName) {
@@ -79,6 +150,7 @@ void runOptimisation(float availableCurrent) {
             if (node->relayPin != -1) {
                 JsonObject obj = loads.createNestedObject();
                 MQTTResponse::addNode(obj, node, parentName);
+                addScheduleFeasibility(obj, node, TimeManager::getMinutesSinceMidnight());
             }
             for (Node* c : node->children) collectLoads(c, node->name);
         };
@@ -193,8 +265,14 @@ void powerPublishTask(void *pvParameters) {
         estimatorDoc["solar_current"] = sanitizeReading(estimator.get_SolarCurrent());
         estimatorDoc["solar_power_w"] = sanitizeReading(currentSolarVoltage * currentSolarCurrent);
         estimatorDoc["battery_power_w"] = sanitizeReading(currentBatteryVoltage * std::max(0.0f, estimator.get_SolarCurrent()));
-        float availableCurrent = estimator.getAvailableCurrent(BATTERY_CAPACITY_AH, ESTIMATOR_RUNTIME_HOURS, ESTIMATOR_FORCED_LOADS);
+        float scheduledReserveCurrent = 0.0f;
+        if (xSemaphoreTake(bfsMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            scheduledReserveCurrent = getScheduledReserveCurrent();
+            xSemaphoreGive(bfsMutex);
+        }
+        float availableCurrent = estimator.getAvailableCurrent(BATTERY_CAPACITY_AH, ESTIMATOR_RUNTIME_HOURS, ESTIMATOR_FORCED_LOADS + scheduledReserveCurrent);
         estimatorDoc["available_current"] = sanitizeReading(availableCurrent);
+        estimatorDoc["scheduled_reserve_current"] = sanitizeReading(scheduledReserveCurrent);
         estimatorDoc["available_power_w"] = sanitizeReading(availableCurrent * currentBatteryVoltage);
         estimatorDoc["estimated_runtime_h"] = sanitizeReading(estimator.getEstimatedRuntimeHours(BATTERY_CAPACITY_AH, ESTIMATOR_FORCED_LOADS));
         estimatorDoc["energy_wh"] = sanitizeReading(currentSolarEnergy);

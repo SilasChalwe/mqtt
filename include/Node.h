@@ -25,6 +25,16 @@ struct Node {
     bool isActive = false;
     float wireFriction = 0.0f;
 
+    bool hasSchedule = false;
+    int scheduleStartMinute = -1;
+    int scheduleEndMinute = -1;
+    int scheduleBoost = 1000;
+    int scheduleMode = 1;
+    float scheduleMinimumSoc = 20.0f;
+    int scheduleRequiredRuntimeMinutes = 0;
+    int scheduleRuntimeTodayMinutes = 0;
+    int scheduleLastRuntimeMinute = -1;
+
     std::vector<Node*> children;
 
     bool isLoad() const;

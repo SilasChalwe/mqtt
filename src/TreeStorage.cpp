@@ -31,6 +31,14 @@ void nodeToJson(Node* node, JsonObject obj) {
     obj["priority"] = node->priority;
     obj["pin"] = node->relayPin;
     obj["friction"] = node->wireFriction;
+    obj["schedule_enabled"] = node->hasSchedule;
+    obj["schedule_start_minute"] = node->scheduleStartMinute;
+    obj["schedule_end_minute"] = node->scheduleEndMinute;
+    obj["schedule_boost"] = node->scheduleBoost;
+    obj["schedule_mode"] = node->scheduleMode;
+    obj["schedule_minimum_soc"] = node->scheduleMinimumSoc;
+    obj["schedule_required_runtime_minutes"] = node->scheduleRequiredRuntimeMinutes;
+    obj["schedule_runtime_today_minutes"] = node->scheduleRuntimeTodayMinutes;
     obj["type"] = node->typeString();
     obj["active"] = node->isActive;
 
@@ -58,6 +66,15 @@ bool loadChildren(BestFirstSearch& bfs, const char* parentName, JsonArray childr
         node->power = child["power_w"] | node->power;
         node->energyWh = child["energy_wh"] | 0.0f;
         node->isActive = child["active"] | false;
+        node->hasSchedule = child["schedule_enabled"] | false;
+        node->scheduleStartMinute = child["schedule_start_minute"] | -1;
+        node->scheduleEndMinute = child["schedule_end_minute"] | -1;
+        node->scheduleBoost = child["schedule_boost"] | 1000;
+        node->scheduleMode = child["schedule_mode"] | 1;
+        node->scheduleMinimumSoc = child["schedule_minimum_soc"] | 20.0f;
+        node->scheduleRequiredRuntimeMinutes = child["schedule_required_runtime_minutes"] | 0;
+        node->scheduleRuntimeTodayMinutes = child["schedule_runtime_today_minutes"] | 0;
+        node->scheduleLastRuntimeMinute = -1;
         node->lastActiveUpdateMs = millis();
 
         if (child["children"].is<JsonArray>()) {

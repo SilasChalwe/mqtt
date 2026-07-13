@@ -39,3 +39,14 @@ String TimeManager::getFormattedTime(const char* format) {
     strftime(buffer, sizeof(buffer), format, &timeInfo);
     return String(buffer);
 }
+
+int TimeManager::getMinutesSinceMidnight() {
+    if (!timeInitialised) {
+        return -1;
+    }
+    struct tm timeInfo;
+    if (!getLocalTime(&timeInfo)) {
+        return -1;
+    }
+    return (timeInfo.tm_hour * 60) + timeInfo.tm_min;
+}
