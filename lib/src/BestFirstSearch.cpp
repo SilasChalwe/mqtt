@@ -6,9 +6,10 @@
 
 BestFirstSearch::BestFirstSearch() {
     // Root is the entry point (the very top circle in your image)
+    rootName = "root";
     root = new Node();
     root->id = 0;
-    root->name = "Main_DB";
+    root->name = rootName;
     root->currentDraw = 0.0f;
     root->voltage = 0.0f;
     root->power = 0.0f;
@@ -33,8 +34,8 @@ Node* BestFirstSearch::findByName(Node* current, const String& name) {
 }
 
 Node* BestFirstSearch::createAndAddNode(const String& parentName, const String& name, float amps, int priority, int pin, float friction, bool forced, float voltage) {
-    // If parent is not specified or Main_DB, start at root
-    Node* parent = (parentName == "Main_DB" || parentName == "") ? root : findByName(root, parentName);
+    // If parent is not specified or the configured root name, start at root
+    Node* parent = (parentName == rootName || parentName == "") ? root : findByName(root, parentName);
 
     if (!parent) return nullptr; 
 
@@ -79,7 +80,7 @@ void BestFirstSearch::recursiveDelete(Node* node) {
 }
 
 bool BestFirstSearch::removeNode(const String& nodeName) {
-    if (nodeName == "Main_DB") return false; 
+    if (nodeName == rootName) return false; 
 
     // Internal helper to find the parent of a target node
     std::function<Node*(Node*, const String&)> findParentOf = [&](Node* current, const String& target) -> Node* {

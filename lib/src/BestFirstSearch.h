@@ -11,6 +11,7 @@
 class BestFirstSearch {
 private:
     Node* root;
+    String rootName;
     Node* findByName(Node* current, const String& name);
     void recursiveDelete(Node* node);
 
