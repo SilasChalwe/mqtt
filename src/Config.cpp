@@ -39,5 +39,5 @@ const int DAYLIGHT_OFFSET_SEC = 0;
 const unsigned long PUBLISH_INTERVAL = 60000;
 const unsigned long PING_INTERVAL = 15000;
 const unsigned long STATUS_LIST_INTERVAL = 6000;
-const unsigned long OPTIMISE_INTERVAL = 6000;
+const unsigned long OPTIMISE_INTERVAL = 60000;
 const float OPTIMISE_CURRENT = 20.0f;
