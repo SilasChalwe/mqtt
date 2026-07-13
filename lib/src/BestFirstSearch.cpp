@@ -41,25 +41,6 @@ void BestFirstSearch::clear() {
     root->isActive = true;
 }
 
-void BestFirstSearch::clear() {
-    if (!root) return;
-    for (Node* child : root->children) {
-        recursiveDelete(child);
-    }
-    root->children.clear();
-    root->name = rootName;
-    root->currentDraw = 0.0f;
-    root->voltage = 0.0f;
-    root->power = 0.0f;
-    root->energyWh = 0.0f;
-    root->lastActiveUpdateMs = millis();
-    root->priority = 0;
-    root->relayPin = -1;
-    root->isForced = true;
-    root->wireFriction = 0.0f;
-    root->isActive = true;
-}
-
 Node* BestFirstSearch::findByName(Node* current, const String& name) {
     if (!current) return nullptr;
     if (current->name == name) return current;
@@ -201,11 +182,11 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
         if (candidates[i]->isFixed()) selected[i] = candidates[i]->isActive;
     }
 
-    std::vector<int> nonForcedIndices;
+    std::vector<int> autoIndices;
     for (int i = 0; i < N; i++) {
-        if (!candidates[i]->isFixed()) nonForcedIndices.push_back(i);
+        if (!candidates[i]->isFixed()) autoIndices.push_back(i);
     }
-    int M = nonForcedIndices.size();
+    int M = autoIndices.size();
 
     const size_t cells = (size_t)(M + 1) * (size_t)(remainingC + 1) * (size_t)(remainingW + 1);
     const size_t bytes = cells * sizeof(int);
@@ -227,7 +208,7 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
 
     std::vector<int> K((M + 1) * (remainingC + 1) * (remainingW + 1), 0);
     for (int i = 1; i <= M; i++) {
-        Node* node = candidates[nonForcedIndices[i - 1]];
+        Node* node = candidates[autoIndices[i - 1]];
         int C_i = (int)std::ceil(node->currentDraw * CURRENT_SCALE - 0.0001f);
         int P_i = (int)std::ceil(node->power / POWER_SCALE - 0.0001f);
         if (C_i < 0) C_i = 0;
@@ -249,7 +230,7 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
     int c_limit = remainingC;
     int w_limit = remainingW;
     for (int i = M; i > 0; i--) {
-        Node* node = candidates[nonForcedIndices[i - 1]];
+        Node* node = candidates[autoIndices[i - 1]];
         int C_i = (int)std::ceil(node->currentDraw * CURRENT_SCALE - 0.0001f);
         int P_i = (int)std::ceil(node->power / POWER_SCALE - 0.0001f);
         if (C_i < 0) C_i = 0;
@@ -257,11 +238,11 @@ void BestFirstSearch::execute(std::vector<Node*> candidates, float C_available, 
 
         if (C_i <= c_limit && P_i <= w_limit &&
             K[index(i, c_limit, w_limit)] == node->priority + K[index(i - 1, c_limit - C_i, w_limit - P_i)]) {
-            selected[nonForcedIndices[i - 1]] = true;
+            selected[autoIndices[i - 1]] = true;
             c_limit -= C_i;
             w_limit -= P_i;
         } else {
-            selected[nonForcedIndices[i - 1]] = false;
+            selected[autoIndices[i - 1]] = false;
         }
     }
 

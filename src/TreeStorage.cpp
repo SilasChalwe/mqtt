@@ -11,6 +11,15 @@
 #endif
 
 namespace {
+bool parseFixedMode(JsonVariantConst typeValue, bool fallbackFixed) {
+    if (typeValue.is<const char*>()) {
+        String type = typeValue.as<const char*>();
+        type.toLowerCase();
+        if (type == "fixed") return true;
+        if (type == "auto") return false;
+    }
+    return fallbackFixed;
+}
 void nodeToJson(Node* node, JsonObject obj) {
     if (!node) return;
     obj["name"] = node->name;
@@ -21,8 +30,7 @@ void nodeToJson(Node* node, JsonObject obj) {
     obj["priority"] = node->priority;
     obj["pin"] = node->relayPin;
     obj["friction"] = node->wireFriction;
-    obj["forced"] = node->isForced;
-    obj["forced_state"] = MQTTResponse::forcedState(node);
+    obj["type"] = node->typeString();
     obj["active"] = node->isActive;
 
     JsonArray children = obj.createNestedArray("children");
@@ -42,9 +50,9 @@ bool loadChildren(BestFirstSearch& bfs, const char* parentName, JsonArray childr
         int priority = child["priority"] | 0;
         int pin = child.containsKey("pin") ? child["pin"].as<int>() : (child.containsKey("relayPin") ? child["relayPin"].as<int>() : -1);
         float friction = child.containsKey("friction") ? child["friction"].as<float>() : (child.containsKey("wireFriction") ? child["wireFriction"].as<float>() : 0.1f);
-        bool forced = child["forced"] | false;
+        bool fixed = parseFixedMode(child["type"], child["forced"] | false);
 
-        Node* node = bfs.createAndAddNode(parentName, name, amps, priority, pin, friction, forced, voltage);
+        Node* node = bfs.createAndAddNode(parentName, name, amps, priority, pin, friction, fixed, voltage);
         if (!node) return false;
         node->power = child["power_w"] | node->power;
         node->energyWh = child["energy_wh"] | 0.0f;
@@ -123,7 +131,7 @@ bool load(BestFirstSearch& bfs) {
     if (root) {
         root->name = doc["name"] | "Main_DB";
         root->isActive = doc["active"] | true;
-        root->isForced = doc["forced"] | true;
+        root->mode = parseFixedMode(doc["type"], doc["forced"] | true) ? LoadMode::Fixed : LoadMode::Auto;
         root->energyWh = doc["energy_wh"] | 0.0f;
         root->lastActiveUpdateMs = millis();
     }

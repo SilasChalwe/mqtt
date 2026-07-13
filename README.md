@@ -115,8 +115,7 @@ It publishes responses on `esp32/status/...` topics and telemetry on `esp32/tele
       "priority": 1,
       "pin": 13,
       "friction": 0.1,
-      "forced": false,
-      "forced_state": "not_forced",
+      "type": "auto",
       "active": true
     }
   ]
@@ -142,8 +141,7 @@ It publishes responses on `esp32/status/...` topics and telemetry on `esp32/tele
     "requested_state": "on",
     "name": "MyFridge",
     "pin": 13,
-    "forced": true,
-    "forced_state": "forced_on",
+    "type": "fixed",
     "active": true
   }
 }
@@ -182,8 +180,7 @@ It publishes responses on `esp32/status/...` topics and telemetry on `esp32/tele
   "priority": 1,
   "pin": 13,
   "friction": 0.1,
-  "forced": false,
-  "forced_state": "not_forced",
+  "type": "auto",
   "active": true
 }
 ```
@@ -209,7 +206,7 @@ It publishes responses on `esp32/status/...` topics and telemetry on `esp32/tele
   "priority": 1,
   "pin": 13,
   "friction": 0.1,
-  "forced": false
+  "type": "auto"
 }
 ```
 - subscribe to: `esp32/status/config/node_added`
@@ -231,7 +228,7 @@ It publishes responses on `esp32/status/...` topics and telemetry on `esp32/tele
   "name": "MyFridge",
   "amps": 2.0,
   "priority": 2,
-  "forced": true
+  "type": "fixed"
 }
 ```
 - subscribe to: `esp32/status/config/update_done`
@@ -265,8 +262,7 @@ It publishes responses on `esp32/status/...` topics and telemetry on `esp32/tele
       "priority": 1,
       "pin": 13,
       "friction": 0.1,
-      "forced": false,
-      "forced_state": "not_forced",
+      "type": "auto",
       "active": true,
       "children": []
     }
@@ -316,7 +312,7 @@ The device publishes these topics automatically; dashboards should subscribe to 
 
 This checkout includes focused native C++ regression tests for the load-selection optimiser:
 
-- `test/test_best_first_search.cpp` verifies that `BestFirstSearch::execute()` respects cumulative current and power limits, subtracts forced active loads before selecting optional loads, and keeps the optimal optional set under both constraints.
+- `test/test_best_first_search.cpp` verifies that `BestFirstSearch::execute()` respects cumulative current and power limits, subtracts fixed active loads before selecting auto loads, and keeps the optimal optional set under both constraints.
 - `test/Arduino.h` is a small compatibility shim used only by the native tests so the optimiser can be compiled outside the Arduino IDE.
 
 Historical simulation tooling and chart assets such as `validate/combined.py`, `validate/README.md`, and `validate/png/bfs_run_comparison.png` are not part of this checkout. Treat those validation dashboards as planned or external artifacts unless they are added in a future revision.
