@@ -8,6 +8,7 @@
 #include "../include/MQTTResponse.h"
 #include "../include/MQTTTopics.h"
 #include "../include/TreeStorage.h"
+#include "../include/LoadMode.h"
 #include <functional>
 #include <freertos/queue.h>
 #include <vector>
@@ -51,10 +52,10 @@ static void publishError(MQTTManager* mqtt, const String& requestTopic, const ch
 
 static bool parseFixedMode(JsonVariantConst typeValue, bool fallbackFixed) {
     if (typeValue.is<const char*>()) {
-        String type = typeValue.as<const char*>();
-        type.toLowerCase();
-        if (type == "fixed") return true;
-        if (type == "auto") return false;
+        return parseLoadModeValue(typeValue.as<const char*>(), fallbackFixed);
+    }
+    if (typeValue.is<bool>()) {
+        return typeValue.as<bool>();
     }
     return fallbackFixed;
 }
@@ -192,7 +193,7 @@ void processCommand(const String& topic, const String& payload,
         int priority         = doc["priority"] | 0;
         int pin              = doc["pin"] | -1;
         float friction       = doc["friction"] | 0.1f;
-        bool fixed           = parseFixedMode(doc["type"], doc["forced"] | false);
+        bool fixed           = parseFixedMode(doc["type"], false);
 
         if (name == nullptr || String(name).length() == 0) {
             Serial.println("Missing 'name' in add");
@@ -296,7 +297,7 @@ void processCommand(const String& topic, const String& payload,
             int priority         = obj["priority"] | 0;
             int pin              = obj["pin"] | -1;
             float friction       = obj["friction"] | 0.1f;
-            bool fixed           = parseFixedMode(obj["type"], obj["forced"] | false);
+            bool fixed           = parseFixedMode(obj["type"], false);
 
             if (name == nullptr || String(name).length() == 0) {
                 skipped++;
@@ -394,7 +395,7 @@ void processCommand(const String& topic, const String& payload,
         float amps = doc.containsKey("amps") ? doc["amps"].as<float>() : existing->currentDraw;
         float voltage = doc.containsKey("voltage") ? doc["voltage"].as<float>() : existing->voltage;
         int priority = doc.containsKey("priority") ? doc["priority"].as<int>() : existing->priority;
-        bool fixed = parseFixedMode(doc["type"], doc.containsKey("forced") ? doc["forced"].as<bool>() : existing->isFixed());
+        bool fixed = parseFixedMode(doc["type"], existing->isFixed());
 
         bool ok = bfs->updateNode(name, amps, priority, fixed, voltage);
         if (ok) {

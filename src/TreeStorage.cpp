@@ -1,5 +1,6 @@
 #include "../include/TreeStorage.h"
 #include "../include/MQTTResponse.h"
+#include "../include/LoadMode.h"
 #include <ArduinoJson.h>
 #include <functional>
 
@@ -13,10 +14,10 @@
 namespace {
 bool parseFixedMode(JsonVariantConst typeValue, bool fallbackFixed) {
     if (typeValue.is<const char*>()) {
-        String type = typeValue.as<const char*>();
-        type.toLowerCase();
-        if (type == "fixed") return true;
-        if (type == "auto") return false;
+        return parseLoadModeValue(typeValue.as<const char*>(), fallbackFixed);
+    }
+    if (typeValue.is<bool>()) {
+        return typeValue.as<bool>();
     }
     return fallbackFixed;
 }
@@ -50,7 +51,7 @@ bool loadChildren(BestFirstSearch& bfs, const char* parentName, JsonArray childr
         int priority = child["priority"] | 0;
         int pin = child.containsKey("pin") ? child["pin"].as<int>() : (child.containsKey("relayPin") ? child["relayPin"].as<int>() : -1);
         float friction = child.containsKey("friction") ? child["friction"].as<float>() : (child.containsKey("wireFriction") ? child["wireFriction"].as<float>() : 0.1f);
-        bool fixed = parseFixedMode(child["type"], child["forced"] | false);
+        bool fixed = parseFixedMode(child["type"], false);
 
         Node* node = bfs.createAndAddNode(parentName, name, amps, priority, pin, friction, fixed, voltage);
         if (!node) return false;
@@ -131,7 +132,7 @@ bool load(BestFirstSearch& bfs) {
     if (root) {
         root->name = doc["name"] | "Main_DB";
         root->isActive = doc["active"] | true;
-        root->mode = parseFixedMode(doc["type"], doc["forced"] | true) ? LoadMode::Fixed : LoadMode::Auto;
+        root->mode = parseFixedMode(doc["type"], true) ? LoadMode::Fixed : LoadMode::Auto;
         root->energyWh = doc["energy_wh"] | 0.0f;
         root->lastActiveUpdateMs = millis();
     }

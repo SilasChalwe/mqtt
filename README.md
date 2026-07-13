@@ -1,346 +1,194 @@
-# ESP32 MQTT Power Management
+# MQTT Load Optimisation Firmware for ESP32
 
-This repository contains an Arduino/ESP32 firmware project that collects battery and solar telemetry, publishes sensor data over MQTT, and performs automatic load optimisation.
+This project is an ESP32-based firmware that manages a tree of electrical loads, publishes telemetry over MQTT, and can automatically switch relays to optimise power usage based on available current and battery/solar conditions.
 
-## Features
+It is designed for a small energy-management system where loads are organised in a hierarchical tree, each node can represent a branch or a relay-controlled appliance, and the firmware decides which loads to keep on or off with a best-first-search strategy.
 
-- Connects to WiFi and an MQTT broker using secure WebSocket (WSS)
-- Publishes telemetry for:
-  - temperature
-  - battery voltage and state of charge
-  - solar voltage, current, power, and energy
-  - power estimator and available current
-- Supports automatic optimisation of loads using a Best-First Search tree
-- Uses `ArduinoJson` to publish structured JSON telemetry
-- Includes a command queue and MQTT command handling
+## What this firmware does
 
-## Hardware and firmware components
+- Connects to Wi-Fi and an MQTT broker over WSS.
+- Publishes battery, solar, estimator, and temperature telemetry.
+- Accepts MQTT commands to add, update, delete, inspect, and list loads.
+- Persists the load tree to LittleFS as JSON so the configuration survives reboots.
+- Applies relay switching for supported loads.
+- Runs automatic optimisation to keep the system within a power budget.
 
-- ESP32-based Arduino project
-- `Adafruit_INA219` battery/solar sensor support
-- `WiFiManager` for network connectivity
-- `MQTTManager` for broker communication and message handling
-- `PowerEstimator` and `BestFirstSearch` for load scheduling
-- `TimeManager` for NTP-based timestamping
+## Main features
 
-## Configuration
-
-Update `config/Config.h` with your environment settings before building:
-
-- `WIFI_SSID`
-- `WIFI_PASSWORD`
-- `MQTT_HOST`
-- `MQTT_PORT`
-- `MQTT_CLIENT_ID`
-
-Also configure MQTT topics and timing intervals in `config/Config.h`.
-
-## MQTT Topics
-
-The firmware uses these default topics for telemetry and control.
-
-Publish telemetry:
-
-- `esp32/telemetry/temperature`
-- `esp32/telemetry/battery`
-- `esp32/telemetry/solar`
-- `esp32/telemetry/estimator`
-- `esp32/telemetry/ping`
-Topic access groups:
-
-- User-facing topics: intended for normal clients, dashboards, and operators.
-  - `esp32/command/test`
-  - `esp32/command/config/list`
-  - `esp32/command/config/get_node`
-  - `esp32/command/control/execute`
-  - `esp32/command/control/relay/<node_name>`
-  - `esp32/status/config/list`
-  - `esp32/status/config/get_node`
-  - `esp32/status/control/execute_received`
-  - `esp32/status/control/result`
-  - `esp32/status/control/relay_changed`
-  - `esp32/status/error`
-
-- Administrator topics: intended for system setup, configuration, and maintenance.
-  - `esp32/command/config/add`
-  - `esp32/command/config/add_bulk`
-  - `esp32/command/config/update`
-  - `esp32/command/config/delete`
-  - `esp32/command/config/save_tree`
-  - `esp32/command/config/tree`
-  - `esp32/command/config/pin_status`
-  - `esp32/status/config/node_added`
-  - `esp32/status/config/bulk_added`
-  - `esp32/status/config/update_done`
-  - `esp32/status/config/delete_done`
-  - `esp32/status/config/tree_saved`
-  - `esp32/status/config/tree`
-  - `esp32/status/config/pin_status`
-
-- System/monitoring topics: telemetry and status that can be subscribed by any monitoring client.
-  - `esp32/telemetry/temperature`
-  - `esp32/telemetry/battery`
-  - `esp32/telemetry/solar`
-  - `esp32/telemetry/estimator`
-  - `esp32/telemetry/ping`
-  - `esp32/status/error`
-
-## MQTT topic usage
-
-The device receives commands on `esp32/command/...` topics.
-It publishes responses on `esp32/status/...` topics and telemetry on `esp32/telemetry/...`.
-
-### User-focused commands
-
-#### `esp32/command/control/execute`
-- purpose: run the optimisation algorithm now.
-- publish payload: `10` or `{"available_current":10}`
-- subscribe to:
-  - `esp32/status/control/execute_received`
-  - `esp32/status/control/result`
-- example result payload:
-
-```json
-{
-  "timestamp": "2026-07-12 12:00:00",
-  "available_current": 10.0,
-  "loads": [
-    {
-      "name": "MyFridge",
-      "parent": "Main_DB",
-      "amps": 1.5,
-      "voltage": 230.0,
-      "power_w": 345.0,
-      "energy_wh": 0.0,
-      "priority": 1,
-      "pin": 13,
-      "friction": 0.1,
-      "type": "auto",
-      "active": true
-    }
-  ]
-}
-```
-- empty-tree response: `Auto-optimisation skipped (tree empty)`
-- error responses on `esp32/status/error`:
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-#### `esp32/command/control/relay/<node_name>`
-- purpose: manually force an individual relay node on or off, or return it to automatic optimisation.
-- publish payload: `on`, `off`, `auto`, or `{"state":"on"}` / `{"state":"off"}` / `{"state":"auto"}`
-- subscribe to: `esp32/status/control/relay_changed`
-- example response payload:
-
-```json
-{
-  "ok": true,
-  "type": "control.relay_changed",
-  "request_topic": "esp32/command/control/relay/MyFridge",
-  "data": {
-    "requested_state": "on",
-    "name": "MyFridge",
-    "pin": 13,
-    "type": "fixed",
-    "active": true
-  }
-}
-```
-- error responses on `esp32/status/error` include:
-  - `Invalid relay node name`
-  - `Invalid relay node`
-  - `Invalid relay state (use 'on'/'off'/'auto')`
-  - `Load tree unavailable`
-  - `Internal error: mutex unavailable`
-  - `BFS busy`
-
-#### `esp32/command/config/list`
-- purpose: request a list of configured load nodes.
-- publish payload: empty or `{}`
-- subscribe to: `esp32/status/config/list`
-- example response payload: `[]` or
-
-```json
-[{"name":"MyFridge","amps":1.5,"voltage":230.0}]
-```
-
-#### `esp32/command/config/get_node`
-- purpose: request details for a single node.
-- publish payload: `{"name":"MyFridge"}`
-- subscribe to: `esp32/status/config/get_node`
-- example response payload:
-
-```json
-{
-  "name": "MyFridge",
-  "amps": 1.5,
-  "voltage": 230.0,
-  "power_w": 345.0,
-  "energy_wh": 0.0,
-  "priority": 1,
-  "pin": 13,
-  "friction": 0.1,
-  "type": "auto",
-  "active": true
-}
-```
-- not found payload: `{"error":"not found"}`
-
-#### `esp32/command/test`
-- purpose: placeholder test topic.
-- publish payload: any string or JSON.
-- response: none
-
-### Administrator commands
-
-#### `esp32/command/config/add`
-- purpose: add a new node to the load tree.
-- publish payload example:
-
-```json
-{
-  "parent": "Main_DB",
-  "name": "MyFridge",
-  "amps": 1.5,
-  "voltage": 230.0,
-  "priority": 1,
-  "pin": 13,
-  "friction": 0.1,
-  "type": "auto"
-}
-```
-- subscribe to: `esp32/status/config/node_added`
-- response payload: `MyFridge` or `failed`
-- errors on `esp32/status/error`
-
-#### `esp32/command/config/add_bulk`
-- purpose: add multiple nodes in one request.
-- publish payload: JSON array of add objects.
-- subscribe to: `esp32/status/config/bulk_added`
-- example response: `Added 3 loads, skipped 1 invalid entries`
-
-#### `esp32/command/config/update`
-- purpose: modify an existing node.
-- publish payload example:
-
-```json
-{
-  "name": "MyFridge",
-  "amps": 2.0,
-  "priority": 2,
-  "type": "fixed"
-}
-```
-- subscribe to: `esp32/status/config/update_done`
-- response payload: `MyFridge` or `failed`
-
-#### `esp32/command/config/delete`
-- purpose: delete a configured node.
-- publish payload: `{"name":"MyFridge"}`
-- subscribe to: `esp32/status/config/delete_done`
-- response payload: `MyFridge` or `failed`
-
-#### `esp32/command/config/save_tree`
-- purpose: save the load tree to LittleFS.
-- publish payload: empty or `{}`
-- subscribe to: `esp32/status/config/tree_saved`
-- response payload: `OK`
-
-#### `esp32/command/config/tree`
-- purpose: retrieve the full nested load tree.
-- publish payload: empty or `{}`
-- subscribe to: `esp32/status/config/tree`
-- example response payload:
-
-```json
-{
-  "name": "Main_DB",
-  "children": [
-    {
-      "name": "MyFridge",
-      "amps": 1.5,
-      "priority": 1,
-      "pin": 13,
-      "friction": 0.1,
-      "type": "auto",
-      "active": true,
-      "children": []
-    }
-  ]
-}
-```
-
-#### `esp32/command/config/pin_status`
-- purpose: report which relay pins are currently assigned and which candidate pins are available.
-- publish payload: empty or `{}`
-- subscribe to: `esp32/status/config/pin_status`
-- example response payload:
-
-```json
-{
-  "used": [13, 27],
-  "available": [2, 4, 5, 12, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 32, 33]
-}
-```
-
-### Telemetry topics
-
-The device publishes these topics automatically; dashboards should subscribe to them.
-
-- `esp32/telemetry/temperature`
-- `esp32/telemetry/battery`
-- `esp32/telemetry/solar`
-- `esp32/telemetry/estimator`
-- `esp32/telemetry/ping`
-
-### Error topic
-
-- `esp32/status/error`
-- payload: JSON error envelope, for example:
-
-```json
-{
-  "ok": false,
-  "type": "error",
-  "request_topic": "esp32/command/config/add",
-  "code": "missing_name",
-  "message": "Missing 'name'"
-}
-```
-
-## Validation and simulation
-
-This checkout includes focused native C++ regression tests for the load-selection optimiser:
-
-- `test/test_best_first_search.cpp` verifies that `BestFirstSearch::execute()` respects cumulative current and power limits, subtracts fixed active loads before selecting auto loads, and keeps the optimal optional set under both constraints.
-- `test/Arduino.h` is a small compatibility shim used only by the native tests so the optimiser can be compiled outside the Arduino IDE.
-
-Historical simulation tooling and chart assets such as `validate/combined.py`, `validate/README.md`, and `validate/png/bfs_run_comparison.png` are not part of this checkout. Treat those validation dashboards as planned or external artifacts unless they are added in a future revision.
-
-To run the native optimiser regression tests from the repository root:
-
-```sh
-g++ -std=c++17 -Itest -Iinclude -Ilib/src test/test_best_first_search.cpp src/Node.cpp -o /tmp/test_best_first_search && /tmp/test_best_first_search
-```
-
-## Build and upload
-
-1. Open this folder in the Arduino IDE or PlatformIO.
-2. Select the ESP32 board and the correct serial port.
-3. Build and upload `mqtt.ino`.
+- Hierarchical load tree with parent/child relationships.
+- Per-load settings such as current draw, priority, relay pin, friction, and fixed/auto mode.
+- Relay pin reuse protection and unique load-name validation.
+- Telemetry reporting for battery voltage, state of charge, solar voltage/current/power/energy, and estimator output.
+- Manual relay control via MQTT topics.
+- Automatic optimisation using a best-first-search over the load tree.
 
 ## Project structure
 
-- `mqtt.ino` — main sketch and FreeRTOS tasks
-- `config/Config.h` — network and MQTT configuration
-- `include/` — project headers
-- `src/` — project implementation files
-- `lib/` — third-party library sources and helpers
-- `test/` — native regression tests and Arduino compatibility shim
-- `validate/` — planned or external validation dashboard artifacts; not present in this checkout
+- mqtt.ino: main sketch and task orchestration.
+- config/Config.h: configuration declarations.
+- src/Config.cpp: runtime configuration values such as Wi-Fi credentials, MQTT broker settings, topics, relay options, and timing intervals.
+- include/: public headers for battery, solar, MQTT, command handling, relay control, tree storage, and node modelling.
+- src/: implementation of the firmware modules.
+- lib/src/: BestFirstSearch implementation used by the optimiser.
+- test/: unit tests for the search and load-mode migration logic.
+
+## Hardware assumptions
+
+This firmware expects an ESP32 board connected to:
+
+- An INA219 current/voltage sensor for battery and solar measurements.
+- One or more relay modules for switching loads.
+- A battery and a solar input source, depending on your deployment.
+
+The code is written around the Arduino ESP32 environment and uses libraries such as ArduinoJson, Adafruit INA219, and the ESP-IDF MQTT client stack.
+
+## Configuration
+
+Before flashing the firmware, review and update the values in src/Config.cpp:
+
+- Wi-Fi SSID and password.
+- MQTT host, port, and client ID.
+- Topic names.
+- Relay active-high/active-low behaviour.
+- Battery capacity, voltage thresholds, and estimator defaults.
+- Publish and optimisation intervals.
+
+Important: the current repository contains example values and should be adjusted for your own network and hardware.
+
+## Build and upload
+
+1. Install the Arduino IDE or PlatformIO with ESP32 support.
+2. Install the required libraries:
+   - ArduinoJson
+   - Adafruit INA219
+3. Open mqtt.ino in the Arduino IDE.
+4. Select your ESP32 board and COM port.
+5. Compile and upload the sketch.
+
+If you use PlatformIO, the project layout is still compatible with the sketch-based structure, but the Arduino IDE workflow is the most direct fit for this repository.
+
+## Runtime behaviour
+
+On boot the firmware:
+
+1. Starts Wi-Fi.
+2. Synchronises time using NTP.
+3. Initialises the load tree from persisted storage if available.
+4. Starts the MQTT client and subscribes to the command wildcard topic.
+5. Begins sensor reads and starts background tasks for telemetry and optimisation.
+
+The firmware publishes telemetry at the configured interval and may run optimisation automatically based on the available current estimate.
+
+## MQTT interface
+
+The device subscribes to command topics under the esp32/command namespace and publishes telemetry and status updates under the esp32/telemetry and esp32/status namespaces.
+
+### Subscription topics (commands the device listens for)
+
+The firmware subscribes to the wildcard topic esp32/# and handles the following command topics:
+
+#### Configuration commands
+
+- esp32/command/config/add
+  - Add a single load.
+  - Payload example:
+    {
+      "name": "Fridge",
+      "amps": 1.2,
+      "pin": 17,
+      "priority": 5,
+      "type": "auto"
+    }
+
+- esp32/command/config/add_bulk
+  - Add multiple loads in a JSON array.
+
+- esp32/command/config/update
+  - Update an existing load's parameters.
+
+- esp32/command/config/delete
+  - Remove a load by name.
+
+- esp32/command/config/list
+  - Return the current load tree.
+
+- esp32/command/config/pin_status
+  - Report used and available relay pins.
+
+- esp32/command/config/get_node
+  - Retrieve details for a specific node.
+
+- esp32/command/config/save_tree
+  - Persist the current tree to LittleFS.
+
+- esp32/command/config/tree
+  - Return the full nested tree as JSON.
+
+#### Control commands
+
+- esp32/command/control/execute
+  - Run optimisation now.
+  - Optional payload example:
+    {"available_current": 10}
+
+- esp32/command/control/relay/<node_name>
+  - Manually force a relay node to on, off, or auto.
+  - Payload examples:
+    - on
+    - off
+    - auto
+
+### Publication topics (data the device sends)
+
+#### Telemetry topics
+
+- esp32/telemetry/temperature
+- esp32/telemetry/battery
+- esp32/telemetry/solar
+- esp32/telemetry/estimator
+
+#### Status topics
+
+- esp32/status/error
+- esp32/status/config/node_added
+- esp32/status/config/bulk_added
+- esp32/status/config/update_done
+- esp32/status/config/delete_done
+- esp32/status/config/tree_saved
+- esp32/status/config/tree
+- esp32/status/config/list
+- esp32/status/config/get_node
+- esp32/status/config/pin_status
+- esp32/status/control/execute_received
+- esp32/status/control/result
+- esp32/status/control/relay_changed
+
+## Optimisation logic
+
+The optimisation engine builds a load tree and uses a best-first-search approach to determine which loads should be enabled given the available current budget. It considers:
+
+- load current draw
+- load priority
+- relay state
+- wire friction / cost
+- current available current from the estimator
+
+The resulting relay actions are then applied and published back over MQTT.
+
+## Persistence
+
+The load tree can be saved to LittleFS as JSON. The storage implementation is in src/TreeStorage.cpp and writes a file named /tree.txt when the filesystem is available.
+
+## Testing
+
+The repository includes basic tests under the test/ folder for the search logic and load-mode migration behaviour.
 
 ## Notes
 
-- The project currently publishes telemetry every 60 seconds and runs optimisation every 6 seconds.
-- The BFS optimisation is skipped until the load tree is initialized.
-- Make sure your MQTT broker supports WSS if using port `443`.
+- This firmware is intended for embedded and experimental energy-management use.
+- Relay pin assignments and load topology should be validated carefully before deployment.
+- Always verify the hardware wiring and power limits before operating real appliances.
+
+## License
+
+This repository does not currently declare a license file. If you plan to redistribute or reuse it commercially, add an explicit license before publication.
